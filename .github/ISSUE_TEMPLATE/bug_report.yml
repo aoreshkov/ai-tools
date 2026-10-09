@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in review-kit or the marketplace doesn't work as documented
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `kotlin-lib` and `oracle-forms` bugs belong in their own repositories:
+        [kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp/issues) and
+        [oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp/issues).
+        Report an install or listing problem with them here.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - review-kit
+        - Marketplace (install, update, listing)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, what happened instead?
+      placeholder: |
+        Ran `/review-kit:review` in incremental mode since origin/main and …
+    validations:
+      required: true
+  - type: textarea
+    id: args
+    attributes:
+      label: Workflow arguments (if applicable)
+      description: The arguments the workflow ran with, and the report's coverage section if one was written.
+      render: json
+  - type: input
+    id: version
+    attributes:
+      label: Plugin and Claude Code versions
+      placeholder: "review-kit 0.1.0, Claude Code 2.1.294"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and plan
+      placeholder: "Windows 11, Pro, interactive session"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Error text or workflow log. Automatically formatted as code.
+      render: shell

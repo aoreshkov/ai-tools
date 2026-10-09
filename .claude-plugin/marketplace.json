@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "aoreshkov-ai-tools",
+  "description": "Claude Code plugins for Kotlin/JVM development and Oracle Forms modernization: multi-lens code review, Kotlin/Java library sources, and Oracle Forms module inspection.",
+  "owner": {
+    "name": "Atanas Oreshkov",
+    "url": "https://github.com/aoreshkov"
+  },
+  "plugins": [
+    {
+      "name": "review-kit",
+      "source": "./review-kit",
+      "category": "code-review",
+      "tags": ["code-review", "workflow", "kotlin", "kmp"],
+      "description": "Multi-lens code review as a dynamic workflow: plans the lenses that fit the repo, fans out read-only reviewers, adversarially verifies each finding, and writes one ranked report."
+    },
+    {
+      "name": "kotlin-lib",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/aoreshkov/kotlin-lib-mcp.git",
+        "path": "plugin",
+        "ref": "v0.7.0",
+        "sha": "34a8d6ea8894842a54d528fd755e5a8dd9456d3e"
+      },
+      "displayName": "Kotlin & Java Library Sources",
+      "description": "Answers Kotlin/Java library questions from the real published sources jar — resolved signatures, KDoc, dependency tree and source search — instead of recalling them. Needs Docker.",
+      "author": {
+        "name": "Atanas Oreshkov",
+        "url": "https://github.com/aoreshkov"
+      },
+      "homepage": "https://github.com/aoreshkov/kotlin-lib-mcp",
+      "repository": "https://github.com/aoreshkov/kotlin-lib-mcp",
+      "license": "Apache-2.0",
+      "category": "development",
+      "tags": ["kotlin", "java", "jvm", "maven", "gradle", "kdoc", "mcp"]
+    },
+    {
+      "name": "oracle-forms",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/aoreshkov/oracle-forms-mcp.git",
+        "path": "plugins/oracle-forms",
+        "ref": "v0.13.0",
+        "sha": "f28e412658fd442ab17fa1e80bb6b0e7743c3891"
+      },
+      "displayName": "Oracle Forms",
+      "description": "Read Oracle Forms modules (.fmb/.mmb/.pll/.olb) from a directory — blocks, items, triggers, program units, PL/SQL, and durable annotations. Needs a JDK 21+ on PATH.",
+      "author": {
+        "name": "Atanas Oreshkov",
+        "url": "https://github.com/aoreshkov"
+      },
+      "homepage": "https://github.com/aoreshkov/oracle-forms-mcp#readme",
+      "repository": "https://github.com/aoreshkov/oracle-forms-mcp",
+      "license": "Apache-2.0",
+      "category": "development",
+      "tags": ["oracle", "forms", "fmb", "plsql", "legacy", "modernization", "mcp"]
+    }
+  ]
+}

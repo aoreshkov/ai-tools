@@ -1,0 +1,18 @@
+# Private analysis / planning documents — never commit
+docs/
+/docs/**
+
+# Local Claude Code state
+.claude/settings.local.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+
+# Plugin eval output
+review-kit/evals/results/
+
+# review-kit reports written at the repository root (default `out`)
+/review-report*.md
