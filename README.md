@@ -443,7 +443,10 @@ release in the plugin's repository:
    ```
 
    `claude plugin validate` does not fetch remote sources, so a wrong `path`, `ref` or
-   `sha` shows up only here.
+   `sha` shows up only here. CI's `remote-plugins` job repeats this for every remote entry:
+   it checks that `ref` still resolves to `sha`, installs the entry, and runs
+   `validate --strict` on the fetched copy. It does not start the MCP server, so still
+   check `claude plugin details` by hand.
 
 Never put `version` on these entries: `plugin.json` already sets it, and it would win
 anyway.

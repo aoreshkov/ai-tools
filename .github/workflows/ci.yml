@@ -36,3 +36,51 @@ jobs:
         run: claude plugin validate . --strict
       - name: Validate review-kit
         run: claude plugin validate ./review-kit --strict
+
+  # `validate .` reads only this repository, so a remote entry's wrong `path`, `ref` or `sha`,
+  # and anything wrong inside the plugin it fetches, shows up only on install. No model calls.
+  remote-plugins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install Claude Code
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - name: Install each remote entry from a scratch config and validate what it fetched
+        run: |
+          MARKET=.claude-plugin/marketplace.json
+          market=$(jq -r .name "$MARKET")
+          export CLAUDE_CONFIG_DIR="${RUNNER_TEMP}/claude-config"
+          claude plugin marketplace add ./
+          for name in $(jq -r '.plugins[] | select(.source | type == "object") | .name' "$MARKET"); do
+            entry=$(jq -c --arg n "$name" '.plugins[] | select(.name == $n)' "$MARKET")
+            ref=$(jq -r '.source.ref // empty' <<< "$entry")
+            sha=$(jq -r '.source.sha // empty' <<< "$entry")
+            url=$(jq -r '.source.url // .source.repo' <<< "$entry")
+            [[ "$url" == *://* || "$url" == git@* ]] || url="https://github.com/${url}"
+            test -n "$ref" && test -n "$sha" || {
+              echo "::error::${name}: a remote entry needs both ref (the release tag) and sha"; exit 1; }
+
+            # The install checks out `sha` and ignores `ref`, so a tag that was moved, or a
+            # sha copied from the annotated tag object, would go unnoticed.
+            tagged=$(git ls-remote "$url" "refs/tags/${ref}^{}" | cut -f1)
+            test -n "$tagged" || tagged=$(git ls-remote "$url" "refs/tags/${ref}" | cut -f1)
+            test "$tagged" = "$sha" || {
+              echo "::error::${name}: ${ref} is ${tagged:-missing} at ${url}, but the entry pins ${sha}"; exit 1; }
+
+            claude plugin install "${name}@${market}"
+            record=$(jq -c --arg id "${name}@${market}" '.plugins[$id][0]' \
+              "${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json")
+            got=$(jq -r .gitCommitSha <<< "$record")
+            test "$got" = "$sha" || {
+              echo "::error::${name}: installed ${got}, but the entry pins ${sha}"; exit 1; }
+            echo "${name}: ${ref} (${sha:0:12}) installed as version $(jq -r .version <<< "$record")"
+
+            # The fetched copy is what users run; `validate .` above never sees it.
+            claude plugin validate "$(jq -r .installPath <<< "$record")" --strict
+          done

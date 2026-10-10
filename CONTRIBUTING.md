@@ -16,7 +16,8 @@ there. This repository holds `review-kit` and the marketplace that lists all thr
 
 ## Checks
 
-Run all three before every commit. CI runs the same commands, with no model calls.
+Run all three before every commit. CI runs the same commands, and also installs each
+remote marketplace entry to check its pin. None of it calls the model.
 
 ```bash
 node --test
