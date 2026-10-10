@@ -64,3 +64,6 @@ claude plugin validate ./review-kit --strict
 - Actions are pinned to full commit SHAs with a `# vX.Y.Z` comment; Dependabot bumps
   them. Never pin to a tag.
 - `CLAUDE_CODE_VERSION` in `.github/workflows/ci.yml` is pinned and bumped by hand.
+- The `remote-plugins` job installs every remote entry from a scratch config, checks that
+  `ref` resolves to `sha`, and runs `validate --strict` on the fetched copy. It needs network
+  access to the plugin repos but no model calls or login.
