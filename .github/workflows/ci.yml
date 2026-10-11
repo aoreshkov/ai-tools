@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - name: Workflow script tests
+      - name: Workflow and token-audit script tests
         run: node --test
       - name: Install Claude Code
         run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
@@ -36,6 +36,8 @@ jobs:
         run: claude plugin validate . --strict
       - name: Validate review-kit
         run: claude plugin validate ./review-kit --strict
+      - name: Validate token-audit
+        run: claude plugin validate ./token-audit --strict
 
   # `validate .` reads only this repository, so a remote entry's wrong `path`, `ref` or `sha`,
   # and anything wrong inside the plugin it fetches, shows up only on install. No model calls.

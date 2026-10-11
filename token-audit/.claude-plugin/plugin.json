@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "token-audit",
+  "displayName": "Token Audit",
+  "version": "0.1.0",
+  "description": "Ranks a project's Claude Code sessions by token use and breaks the costliest down by action, large tool result and prompt, with habits to change. Reads local session transcripts; needs Node 20+.",
+  "author": {
+    "name": "Atanas Oreshkov",
+    "url": "https://github.com/aoreshkov"
+  },
+  "homepage": "https://github.com/aoreshkov/ai-tools#token-audit",
+  "repository": "https://github.com/aoreshkov/ai-tools",
+  "license": "MIT",
+  "keywords": ["tokens", "usage", "cost", "context", "sessions", "transcripts"]
+}

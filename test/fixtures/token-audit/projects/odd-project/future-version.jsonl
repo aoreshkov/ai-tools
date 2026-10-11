@@ -1,0 +1,2 @@
+{"type":"user","version":"9.9.9","cwd":"/work/demo","sessionId":"x","timestamp":"2026-09-01T10:34:00.000Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","version":"9.9.9","cwd":"/work/demo","sessionId":"x","timestamp":"2026-09-01T10:35:00.000Z","message":{"id":"msg_f1","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":0,"cache_creation_input_tokens":90,"cache_read_input_tokens":0,"output_tokens":2}}}

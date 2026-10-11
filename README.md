@@ -8,6 +8,7 @@ plugin marketplace.
 | Plugin                          | What it does                                                                 | Needs                         | Lives in                                                               |
 | ------------------------------- | ---------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
 | [`review-kit`](#review-kit)     | Multi-lens code review as a dynamic workflow                                 | Dynamic workflows turned on   | this repository                                                        |
+| [`token-audit`](#token-audit)   | Ranks past sessions by token use and shows which actions and prompts drove it | Node 20+ on `PATH`           | this repository                                                        |
 | [`kotlin-lib`](#kotlin-lib)     | MCP server and skills that read the real sources of any Maven Kotlin/Java library | Docker                   | [aoreshkov/kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp)     |
 | [`oracle-forms`](#oracle-forms) | MCP server and a skill that read Oracle Forms modules (`.fmb`, `.mmb`, `.pll`, `.olb`) | A JDK 21+ on `PATH`     | [aoreshkov/oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp) |
 
@@ -21,6 +22,7 @@ Add the marketplace once, then install the plugins you want:
 ```bash
 claude plugin marketplace add aoreshkov/ai-tools
 claude plugin install review-kit@aoreshkov-ai-tools
+claude plugin install token-audit@aoreshkov-ai-tools
 claude plugin install kotlin-lib@aoreshkov-ai-tools
 claude plugin install oracle-forms@aoreshkov-ai-tools
 ```
@@ -354,6 +356,64 @@ approval, and "don't ask again" has the same effect as the rule.
   the session that started it, and only an interactive session signed in to a
   subscription waits out a usage limit; `-p` and scheduled runs simply die at the limit.
 
+## token-audit
+
+Answers "which sessions, actions and prompts used the most tokens in this project?" from
+the session transcripts Claude Code keeps on your machine. It ranks the project's sessions
+by total tokens. For the costliest it shows the actions behind the cost (by the round-trip
+tokens of the calls that issued them), the tool results re-read most often, the prompts
+that drove the most calls, and a read/edit/build/git split. It then turns those numbers
+into a few concrete habits to change.
+
+```text
+/token-audit:token-audit              top sessions, then the top 3 broken down
+/token-audit:token-audit 10           top 10, then the top 3 broken down
+/token-audit:token-audit 3f2a9c1e     one session, by id or id prefix
+```
+
+Asking "which sessions burned the most tokens here?" works too. The skill runs in a forked
+subagent, so the audit's own reading stays out of your conversation and only the summary
+comes back. The forked context starts small; running the audit inside a long session would
+re-read that session's context on every step, the very cost it measures.
+
+### What the numbers are
+
+- Totals per call come from the API's usage data in the transcript, so they are exact.
+  Each response is counted once even though the transcript splits it over several records.
+- `cost-eq` weights tokens by relative price (input 1, cache write 1.25, cache read 0.1,
+  output 5). It is for comparing sessions; for billing figures use `/usage` or the Console.
+- Tool-result sizes and their carry (size times the later calls that re-read the result,
+  until a compaction) are estimates, marked `~`.
+- Subagent transcripts count toward the session that started them.
+
+Definitions are in [`reference.md`](token-audit/skills/token-audit/reference.md).
+
+### Limits
+
+- **The transcript format is internal to Claude Code** and may change in any release.
+  The script reads as few fields as it can, skips and counts what it cannot parse, fails
+  a session loudly rather than reporting zero, and warns when transcripts come from a
+  newer Claude Code than it was tested with.
+- Only transcripts still on disk count: Claude Code deletes them after
+  `cleanupPeriodDays` (30 days by default).
+- One machine, one project at a time. For ongoing or team-wide tracking, use Claude Code's
+  [OpenTelemetry export](https://code.claude.com/docs/en/monitoring-usage), the supported
+  structured source.
+
+### Permissions
+
+The skill pre-approves exactly one command, `node "<skill dir>/scripts/audit.mjs" …`,
+for Bash and for PowerShell. It runs nothing else, and the script only reads under your
+Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`). It writes nothing.
+
+The script also runs on its own:
+
+```bash
+node token-audit/skills/token-audit/scripts/audit.mjs rank --top 10
+node token-audit/skills/token-audit/scripts/audit.mjs session <id> --json
+node token-audit/skills/token-audit/scripts/audit.mjs --help
+```
+
 ## Development
 
 ### Checks
@@ -367,6 +427,17 @@ the same commands on every pull request and every push to `main`, with no model 
 node --test
 claude plugin validate . --strict
 claude plugin validate ./review-kit --strict
+claude plugin validate ./token-audit --strict
+```
+
+`token-audit`'s script is tested the same way, over small synthetic transcripts in
+`test/fixtures/token-audit/`: parsing, attribution, locating sessions, exit codes, the
+output budget, and snapshots of the `--json` shapes. After an intended shape change,
+refresh the snapshots with `UPDATE_SNAPSHOTS=1 node --test`. After changing the skill's
+description, check that a plain question still invokes it (model calls, so manual):
+
+```bash
+claude plugin eval ./token-audit --ablation none
 ```
 
 A seeded-defect eval in `review-kit/evals/seeded-defects` measures what a real run
@@ -453,5 +524,5 @@ anyway.
 
 ## Licence
 
-`review-kit` and this repository: MIT. `kotlin-lib` and `oracle-forms`: Apache-2.0, in
+`review-kit`, `token-audit` and this repository: MIT. `kotlin-lib` and `oracle-forms`: Apache-2.0, in
 their own repositories.

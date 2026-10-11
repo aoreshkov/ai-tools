@@ -1,5 +1,29 @@
 # Changelog
 
+## token-audit 0.1.0
+
+New plugin in the marketplace, from this repository.
+
+- `/token-audit:token-audit` ranks the current project's sessions by total tokens
+  (with cost-eq, calls, output, cache write/read and subagent share). It then breaks the
+  top 3, or a session you name, down by action, largest tool result, costliest prompt and
+  category, and ends with recommendations, each tied to a number in the output.
+- Runs as a forked skill that waits for its result, so the audit's own reading stays out
+  of the conversation. The ranking is injected before the skill starts. The only
+  pre-approved command is the bundled `node` script.
+- `audit.mjs rank | session | categories` also runs on its own, with `--json`,
+  `--top`, `--weights`, `--include-subagents`, `--config-dir` and `--exit-zero`. Exit
+  codes: 0 ok, 1 usage error, 2 nothing found.
+- Responses split over several transcript records are counted once. Shell commands are
+  keyed and categorised by their leading command after `cd`, `export` and variable
+  prefixes. Result carry stops at a compaction, and images count a fixed 1,600 tokens.
+- Defensive about the internal transcript format: unparsable lines and records without
+  usage are counted and reported, a session with no usable data fails loudly, and
+  transcripts newer than the tested Claude Code version (2.1.296) raise a warning.
+- Default text output stays within 60 lines and 4 KB. Prompts are cut to 110 characters
+  and commands to 90.
+- Tests over synthetic transcripts (`node --test`), with no model calls.
+
 ## review-kit 0.1.0
 
 First public release of the `aoreshkov-ai-tools` marketplace.
