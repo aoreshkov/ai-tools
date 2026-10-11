@@ -9,6 +9,7 @@ plugin marketplace.
 | ------------------------------- | ---------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
 | [`review-kit`](#review-kit)     | Multi-lens code review as a dynamic workflow                                 | Dynamic workflows turned on   | this repository                                                        |
 | [`token-audit`](#token-audit)   | Ranks past sessions by token use and shows which actions and prompts drove it | Node 20+ on `PATH`           | this repository                                                        |
+| [`token-meter`](#token-meter)   | A live band above the prompt: folder, branch, model, effort, context, limits, cost | Claude Code 2.1.287+          | this repository                                                        |
 | [`kotlin-lib`](#kotlin-lib)     | MCP server and skills that read the real sources of any Maven Kotlin/Java library | Docker                   | [aoreshkov/kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp)     |
 | [`oracle-forms`](#oracle-forms) | MCP server and a skill that read Oracle Forms modules (`.fmb`, `.mmb`, `.pll`, `.olb`) | A JDK 21+ on `PATH`     | [aoreshkov/oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp) |
 
@@ -23,6 +24,7 @@ Add the marketplace once, then install the plugins you want:
 claude plugin marketplace add aoreshkov/ai-tools
 claude plugin install review-kit@aoreshkov-ai-tools
 claude plugin install token-audit@aoreshkov-ai-tools
+claude plugin install token-meter@aoreshkov-ai-tools
 claude plugin install kotlin-lib@aoreshkov-ai-tools
 claude plugin install oracle-forms@aoreshkov-ai-tools
 ```
@@ -414,6 +416,65 @@ node token-audit/skills/token-audit/scripts/audit.mjs session <id> --json
 node token-audit/skills/token-audit/scripts/audit.mjs --help
 ```
 
+## token-meter
+
+Keeps the session's figures in view in a band above the prompt:
+
+```text
+ai-tools ⎇ main  Opus 5.5 high  ctx ░░░░░░░░░░ 5% 48k/1.0M  5h 43% ↻3m  7d 32% ↻3d21h  $0.12  hide
+```
+
+- The folder (`root/…/folder` once the session moves below where it started), the git
+  branch (the short commit when detached), the model, and the reasoning effort.
+- Context use as a bar, a percentage and tokens over the window: green below 70%, yellow
+  up to 90%, red from 90%.
+- Each rate-limit window with the time to its reset (claude.ai Pro and Max, or a Claude
+  apps gateway's spend limit).
+- The session's cost, once it has one.
+
+While context or a limit is at 90% or more, an alert line also shows under the prompt,
+such as `⚠ token-meter: context 92%`, and it clears when the figure drops. The `hide`
+button or `/token-meter hide` hides the band; `/token-meter show` brings it back.
+
+It sits beside a custom [status line](https://code.claude.com/docs/en/statusline), not in
+place of one: your status line still renders, and the alert line sits between it and the
+prompt. Narrow terminals drop the bar, the token counts and the reset times, and shorten
+long branch names.
+
+### Requirements and limits
+
+- Claude Code 2.1.287 or later, in a terminal or the Code tab of the Desktop app. It is a
+  [mod](https://code.claude.com/docs/en/plugins/mods/overview): it draws nothing in the VS
+  Code chat panel, in `claude -p` or in cloud sessions.
+- Mods are early access, and their API may change in any Claude Code release.
+- Until the first response, context reads `ctx --`. The effort appears with the first
+  request, because the mod reads it from the request rather than from your settings. Rate
+  limits show from the start.
+- The branch is read again after each response and once a minute, so a checkout made
+  outside the session can take up to a minute to show.
+- It does not run under `--safe-mode` or `disableAllHooks`, in a folder you have not
+  trusted, or where an organization allows only its own mods (`allowManagedModsOnly`).
+
+### Permissions
+
+A mod runs inside Claude Code with your permissions. `claude plugin validate
+./token-meter` lists what this one handles and calls:
+
+```text
+hooks: session.start, classic.SessionStart{source=clear|resume|fork}, session.measure,
+       turn.step, command.run{command=token-meter}, ui.render{component=AbovePrompt}
+calls: $.clock.every, $.clock.now, $.command.register, $.fs.read, $.session.cwd,
+       $.session.model, $.session.repo, $.session.root, $.session.usage, $.state.get,
+       $.state.set, $.ui.invalidate, $.ui.log, $.ui.resolve, $.ui.status
+```
+
+The one file it reads is git's `HEAD`: `$.fs.read` opens `.git/HEAD` in the nearest
+repository folder at or above the working directory, or, in a worktree, the `HEAD` its
+`.git` file points to. Outside a git repository it reads nothing. It writes no files,
+starts no processes (git included), makes no network requests, reads no environment
+variables or settings, and calls no model. `turn.step` sees each model request so the band
+can show its effort, and passes every request on unchanged.
+
 ## Development
 
 ### Checks
@@ -428,7 +489,15 @@ node --test
 claude plugin validate . --strict
 claude plugin validate ./review-kit --strict
 claude plugin validate ./token-audit --strict
+claude plugin validate ./token-meter --strict
+claude plugin test ./token-meter
 ```
+
+`token-meter` is tested with Claude Code's own test kit: `claude plugin test` loads the mod
+the way a session does, fires measurements and model requests at it, and draws its band
+for the terminal and the Desktop app, offline and with no model calls. Its test file is
+`.test.tsx` so that `node --test` leaves it alone. To try a change in a session, run
+`claude --plugin-dir ./token-meter` from this repository; saving a file reloads the mod.
 
 `token-audit`'s script is tested the same way, over small synthetic transcripts in
 `test/fixtures/token-audit/`: parsing, attribution, locating sessions, exit codes, the

@@ -15,7 +15,7 @@ concurrency:
 env:
   # Pinned so a new Claude Code release cannot change what `validate --strict` accepts
   # without a reviewed commit. Bump it deliberately.
-  CLAUDE_CODE_VERSION: 2.1.294
+  CLAUDE_CODE_VERSION: 2.1.296
 
 jobs:
   test:
@@ -38,6 +38,11 @@ jobs:
         run: claude plugin validate ./review-kit --strict
       - name: Validate token-audit
         run: claude plugin validate ./token-audit --strict
+      - name: Validate token-meter
+        run: claude plugin validate ./token-meter --strict
+      # The mod's own tests: the engine's test kit, offline, no login and no model calls
+      - name: token-meter tests
+        run: claude plugin test ./token-meter
 
   # `validate .` reads only this repository, so a remote entry's wrong `path`, `ref` or `sha`,
   # and anything wrong inside the plugin it fetches, shows up only on install. No model calls.

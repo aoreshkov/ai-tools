@@ -1,5 +1,32 @@
 # Changelog
 
+## token-meter 0.1.0
+
+New plugin in the marketplace, from this repository. It is a mod and needs Claude Code
+2.1.287 or later, in a terminal or the Desktop app.
+
+- A band above the prompt with the folder, the git branch (the short commit when
+  detached, a worktree's own branch in a worktree), the model (`Opus 5.5`, not the raw ID)
+  and the effort, context use as a bar, percentage and tokens over the window, each rate-limit
+  window with the time to its reset, and the session's cost once it has one.
+- An alert line under the prompt (`⚠ token-meter: context 92%, 7d limit 95%`) only while
+  context or a limit is at 90% or more, cleared when it drops.
+- Figures come from Claude Code's `session.measure` event and `$.session`, and the effort
+  from each main-thread model request, which is passed on unchanged. The branch comes from
+  reading git's `HEAD` file after each response and once a minute. No other files, and no
+  processes, network, environment, settings or model calls.
+- The band gives way to surveys, narrows on small terminals, comes back with its figures
+  after `/clear`, `/resume` and `/branch`, and is hidden or shown with its `hide` button
+  or `/token-meter hide|show`.
+- Tests with Claude Code's test kit (`claude plugin test ./token-meter`), offline and with
+  no model calls, for the terminal and the Desktop app.
+
+### Repository
+
+- CI pins Claude Code 2.1.296 (was 2.1.294), the version the mod was written and tested
+  against, and runs `claude plugin validate ./token-meter --strict` and
+  `claude plugin test ./token-meter`.
+
 ## token-audit 0.1.0
 
 New plugin in the marketplace, from this repository.

@@ -7,7 +7,8 @@ you invest time.
 `kotlin-lib` and `oracle-forms` are developed in their own repositories
 ([kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp),
 [oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp)); contribute to them
-there. This repository holds `review-kit` and the marketplace that lists all three.
+there. This repository holds `review-kit`, `token-audit` and `token-meter`, and the
+marketplace that lists all five.
 
 ## Prerequisites
 
@@ -16,16 +17,20 @@ there. This repository holds `review-kit` and the marketplace that lists all thr
 
 ## Checks
 
-Run all three before every commit. CI runs the same commands, and also installs each
+Run all six before every commit. CI runs the same commands, and also installs each
 remote marketplace entry to check its pin. None of it calls the model.
 
 ```bash
 node --test
 claude plugin validate . --strict
 claude plugin validate ./review-kit --strict
+claude plugin validate ./token-audit --strict
+claude plugin validate ./token-meter --strict
+claude plugin test ./token-meter
 ```
 
-To try your change in a session without installing: `claude --plugin-dir ./review-kit`.
+To try your change in a session without installing: `claude --plugin-dir ./review-kit` (or
+`./token-meter`, which reloads on every save).
 The seeded-defect eval in the README measures what a real run finds; it calls the model,
 so it is a manual check before a release, not something a pull request has to run.
 
