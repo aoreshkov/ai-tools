@@ -11,6 +11,10 @@ Thumbs.db
 *.swp
 .idea/
 
+# What Claude Code writes into a mod loaded with --plugin-dir, for the editor and tsc
+token-meter/tsconfig.json
+token-meter/.claude-plugin/types/
+
 # Plugin eval output
 review-kit/evals/results/
 token-audit/evals/results/

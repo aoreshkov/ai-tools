@@ -4,10 +4,10 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
 
 ## Layout
 
-- `.claude-plugin/marketplace.json` - the marketplace. `review-kit` and `token-audit` are
-  relative paths; `kotlin-lib` and `oracle-forms` are `git-subdir` sources pinned (`ref` tag + `sha`
-  commit) to releases of `aoreshkov/kotlin-lib-mcp` and `aoreshkov/oracle-forms-mcp`.
-  Those repos own the plugins; this repo only points at them.
+- `.claude-plugin/marketplace.json` - the marketplace. `review-kit`, `token-audit` and
+  `token-meter` are relative paths; `kotlin-lib` and `oracle-forms` are `git-subdir`
+  sources pinned (`ref` tag + `sha` commit) to releases of `aoreshkov/kotlin-lib-mcp` and
+  `aoreshkov/oracle-forms-mcp`. Those repos own the plugins; this repo only points at them.
 - `review-kit/` - the multi-lens review plugin.
   - `.claude-plugin/plugin.json` - manifest; `version` pins what installed copies get.
   - `workflows/review.js` - the dynamic workflow script (orchestration lives here).
@@ -23,6 +23,13 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
     attribution) and `format` (text and JSON).
   - `evals/triggers/` - `claude plugin eval` case: a natural question must invoke the
     skill (`tool_used: Skill`). Model calls; a manual pre-release gate, never CI.
+- `token-meter/` - a mod: a band above the prompt with branch, context, limits and cost.
+  - `hooks/register.tsx` - the hooks module (runs inside Claude Code, no Node APIs);
+    `hooks/format.ts` holds its pure helpers.
+  - `types/index.d.ts` - the `$.state` contract, named by `types` in `plugin.json`.
+  - `tests/token-meter.test.tsx` - `claude plugin test` with the engine's test kit. Offline,
+    no model calls. `.tsx`, not `.ts`: Node 22+ `node --test` collects `*.test.ts` and fails
+    on `claude-code/testing`.
 - `test/review.test.mjs` - runs `review.js` against stubbed `agent()`, `pipeline()` and
   `parallel()`. No model calls.
 - `test/token-audit/` - token-audit tests over synthetic transcripts in
@@ -36,13 +43,15 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
 
 ## Checks
 
-Run all four before every commit (Node 20 or later).
+Run all six before every commit (Node 20 or later).
 
 ```bash
 node --test
 claude plugin validate . --strict
 claude plugin validate ./review-kit --strict
 claude plugin validate ./token-audit --strict
+claude plugin validate ./token-meter --strict
+claude plugin test ./token-meter
 ```
 
 ## Rules for `review.js`
@@ -71,11 +80,31 @@ claude plugin validate ./token-audit --strict
 - A `--json` shape change is a deliberate act: update the snapshots with
   `UPDATE_SNAPSHOTS=1 node --test` and note it in the changelog.
 
+## Rules for token-meter
+
+- Load `/plugin-authoring` before editing it. The mods API is early access: the types file
+  Claude Code writes for its version is the authority, not memory or older docs.
+- Keep the `calls:` line of `claude plugin validate` free of `$.process`, `$.http`, `$.env`,
+  `$.settings` and `$.model`, and of every `$.fs` call but `$.fs.read`. Reviewers and
+  organization policy mods flag them. Figures come from `session.measure`, `$.session` and
+  `turn.step`; `$.fs.read` opens only git's `HEAD` (and a worktree's `.git` file), because
+  `$.session.repo()` has no branch. Never run git for it.
+- `turn.step` and every other hook only observe: pass the event on unchanged.
+- `$.ui.status` is for alerts only and is cleared otherwise. A `PromptHint` tail is never
+  drawn while the user has a custom `statusLine` (checked on 2.1.296), so don't use it.
+- State the band draws from lives in `$.state`, declared in `types/index.d.ts`; reload it in
+  `classic.SessionStart` for `clear`, `resume` and `fork`.
+- In a `Box` row, an empty string still takes a `columnGap`; leave an item out with `[]`.
+- Type-check locally with TypeScript 5.4+: `npx -p typescript@5 tsc -p token-meter` works once a
+  `claude --plugin-dir ./token-meter` session has written its gitignored `tsconfig.json`
+  and `.claude-plugin/types/`.
+
 ## Releases
 
 - Bump `version` in the plugin's `.claude-plugin/plugin.json` on every user-visible
   change, and add a `CHANGELOG.md` entry. Installed copies do not update otherwise.
-- Tag releases `review-kit-vX.Y.Z` or `token-audit-vX.Y.Z` with notes from the changelog.
+- Tag releases `review-kit-vX.Y.Z`, `token-audit-vX.Y.Z` or `token-meter-vX.Y.Z` with notes from
+  the changelog.
 - A remote entry moves only to a released tag: set `ref` to the tag and `sha` to its
   commit (`git ls-remote <url> 'refs/tags/<tag>^{}'`), sync the entry's display fields
   from that tag's `plugin.json`, never set `version` on the entry, and install it from a

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "token-meter",
+  "displayName": "Token Meter",
+  "version": "0.1.0",
+  "description": "A band above the prompt with the folder and git branch, model and effort, context use, rate limits and cost, and an alert line past 90%. A mod: needs Claude Code 2.1.287+ in a terminal or the Desktop app.",
+  "author": {
+    "name": "Atanas Oreshkov",
+    "url": "https://github.com/aoreshkov"
+  },
+  "homepage": "https://github.com/aoreshkov/ai-tools#token-meter",
+  "repository": "https://github.com/aoreshkov/ai-tools",
+  "license": "MIT",
+  "keywords": ["tokens", "context", "rate-limits", "cost", "status", "mod"],
+  "types": "./types/index.d.ts"
+}
