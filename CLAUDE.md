@@ -4,8 +4,8 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
 
 ## Layout
 
-- `.claude-plugin/marketplace.json` - the marketplace. `review-kit` is a relative path;
-  `kotlin-lib` and `oracle-forms` are `git-subdir` sources pinned (`ref` tag + `sha`
+- `.claude-plugin/marketplace.json` - the marketplace. `review-kit` and `token-audit` are
+  relative paths; `kotlin-lib` and `oracle-forms` are `git-subdir` sources pinned (`ref` tag + `sha`
   commit) to releases of `aoreshkov/kotlin-lib-mcp` and `aoreshkov/oracle-forms-mcp`.
   Those repos own the plugins; this repo only points at them.
 - `review-kit/` - the multi-lens review plugin.
@@ -15,8 +15,19 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
   - `evals/seeded-defects/` - `claude plugin eval` case: a scaffolded Kotlin repo with
     five known defects. Model calls; a manual pre-release gate, never CI. Defect scores
     count only when `workflow-completed` passes (see README).
+- `token-audit/` - ranks a project's sessions by token use from local transcripts.
+  - `skills/token-audit/SKILL.md` - forked skill; injects the ranking with `` !`node …` ``
+    and runs the script for the breakdowns. `reference.md` defines the figures.
+  - `skills/token-audit/scripts/audit.mjs` - CLI (`rank`, `session`, `categories`);
+    `lib/` holds `locate` (files), `transcript` (pure JSONL parsing), `attribute` (pure
+    attribution) and `format` (text and JSON).
+  - `evals/triggers/` - `claude plugin eval` case: a natural question must invoke the
+    skill (`tool_used: Skill`). Model calls; a manual pre-release gate, never CI.
 - `test/review.test.mjs` - runs `review.js` against stubbed `agent()`, `pipeline()` and
   `parallel()`. No model calls.
+- `test/token-audit/` - token-audit tests over synthetic transcripts in
+  `test/fixtures/token-audit/` (a config dir; `expected/` holds the `--json` snapshots).
+  No model calls.
 - `scripts/seeded-defects-real-run.mjs` - runs the seeded-defects case as a real
   `claude -p` session with workflows on, for when `plugin eval` cannot start the workflow,
   and applies its graders. Model calls; manual, never CI. Keep it out of `test/`, where
@@ -25,12 +36,13 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
 
 ## Checks
 
-Run all three before every commit (Node 20 or later).
+Run all four before every commit (Node 20 or later).
 
 ```bash
 node --test
 claude plugin validate . --strict
 claude plugin validate ./review-kit --strict
+claude plugin validate ./token-audit --strict
 ```
 
 ## Rules for `review.js`
@@ -46,11 +58,24 @@ claude plugin validate ./review-kit --strict
   counted into the report's coverage section.
 - `meta` is a pure literal; its `phases` must match the `phase()` calls (a test checks).
 
+## Rules for token-audit
+
+- Node 20+, built-ins only, ESM. `transcript.mjs` and `attribute.mjs` stay pure (no
+  filesystem, no output); only `locate.mjs` touches disk.
+- The transcript format is internal to Claude Code. Read as few fields as possible,
+  count what is skipped, and warn instead of guessing. After checking a newer release's
+  transcripts, bump `TESTED_MAX_VERSION` in `transcript.mjs`.
+- Default text output stays within 60 lines and 4 KB (a test checks): it lands in a
+  model's context. Prompts are cut to 110 characters, commands to 90.
+- Fixtures are synthetic. Never commit a real transcript or anything copied from one.
+- A `--json` shape change is a deliberate act: update the snapshots with
+  `UPDATE_SNAPSHOTS=1 node --test` and note it in the changelog.
+
 ## Releases
 
-- Bump `version` in `review-kit/.claude-plugin/plugin.json` on every user-visible change,
-  and add a `CHANGELOG.md` entry. Installed copies do not update otherwise.
-- Tag releases `review-kit-vX.Y.Z` with notes from the changelog.
+- Bump `version` in the plugin's `.claude-plugin/plugin.json` on every user-visible
+  change, and add a `CHANGELOG.md` entry. Installed copies do not update otherwise.
+- Tag releases `review-kit-vX.Y.Z` or `token-audit-vX.Y.Z` with notes from the changelog.
 - A remote entry moves only to a released tag: set `ref` to the tag and `sha` to its
   commit (`git ls-remote <url> 'refs/tags/<tag>^{}'`), sync the entry's display fields
   from that tag's `plugin.json`, never set `version` on the entry, and install it from a

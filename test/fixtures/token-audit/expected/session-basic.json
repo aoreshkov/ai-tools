@@ -1,0 +1,117 @@
+{
+  "format": "token-audit/1",
+  "command": "session",
+  "session": {
+    "id": "basic",
+    "title": "Fix the parser",
+    "first": "2026-09-01T10:01:00.000Z",
+    "last": "2026-09-01T10:09:00.000Z",
+    "versions": [
+      "2.1.290"
+    ]
+  },
+  "weights": {
+    "in": 1,
+    "cw": 1.25,
+    "cr": 0.1,
+    "out": 5
+  },
+  "totals": {
+    "calls": 4,
+    "input": 25,
+    "cacheWrite": 3300,
+    "cacheRead": 3500,
+    "output": 370,
+    "total": 7195
+  },
+  "subagents": {
+    "transcripts": 0,
+    "calls": 0,
+    "total": 0
+  },
+  "costEq": 6350,
+  "context": {
+    "compactions": 0,
+    "peak": 3305,
+    "avg": 1706,
+    "profile": [
+      1010,
+      1010,
+      1205,
+      1305,
+      3305
+    ]
+  },
+  "parallelCalls": 0,
+  "actions": [
+    {
+      "key": "(reply / thinking)",
+      "category": "reply",
+      "uses": 1,
+      "tokens": 3505,
+      "share": 0.4871,
+      "output": 200,
+      "resultTokensEst": 0,
+      "carryEst": 0
+    },
+    {
+      "key": "Read",
+      "category": "read/search",
+      "uses": 1,
+      "tokens": 1325,
+      "share": 0.1842,
+      "output": 20,
+      "resultTokensEst": 1800,
+      "carryEst": 1800
+    },
+    {
+      "key": "Edit",
+      "category": "edit",
+      "uses": 1,
+      "tokens": 1305,
+      "share": 0.1814,
+      "output": 100,
+      "resultTokensEst": 10,
+      "carryEst": 20
+    },
+    {
+      "key": "Bash: grep",
+      "category": "read/search",
+      "uses": 1,
+      "tokens": 1060,
+      "share": 0.1473,
+      "output": 50,
+      "resultTokensEst": 100,
+      "carryEst": 300
+    }
+  ],
+  "results": [
+    {
+      "key": "Read",
+      "tokensEst": 1800,
+      "carryEst": 1800,
+      "what": "README.md"
+    },
+    {
+      "key": "Bash: grep",
+      "tokensEst": 100,
+      "carryEst": 300,
+      "what": "cd /work/demo && grep -n parse src/Parser.kt"
+    },
+    {
+      "key": "Edit",
+      "tokensEst": 10,
+      "carryEst": 20,
+      "what": "src/Parser.kt"
+    }
+  ],
+  "prompts": [
+    {
+      "text": "fix the parser",
+      "ts": "2026-09-01T10:01:00.000Z",
+      "calls": 4,
+      "tokens": 7195
+    }
+  ],
+  "warnings": []
+}

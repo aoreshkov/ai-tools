@@ -1,0 +1,107 @@
+{
+  "format": "token-audit/1",
+  "command": "session",
+  "session": {
+    "id": "compacted",
+    "title": "Run the tests",
+    "first": "2026-09-01T10:10:00.000Z",
+    "last": "2026-09-01T10:19:00.000Z",
+    "versions": [
+      "2.1.290"
+    ]
+  },
+  "weights": {
+    "in": 1,
+    "cw": 1.25,
+    "cr": 0.1,
+    "out": 5
+  },
+  "totals": {
+    "calls": 4,
+    "input": 0,
+    "cacheWrite": 600,
+    "cacheRead": 700,
+    "output": 40,
+    "total": 1340
+  },
+  "subagents": {
+    "transcripts": 0,
+    "calls": 0,
+    "total": 0
+  },
+  "costEq": 1020,
+  "context": {
+    "compactions": 1,
+    "peak": 500,
+    "avg": 325,
+    "profile": [
+      100,
+      100,
+      200,
+      500,
+      500
+    ]
+  },
+  "parallelCalls": 0,
+  "actions": [
+    {
+      "key": "(reply / thinking)",
+      "category": "reply",
+      "uses": 2,
+      "tokens": 1020,
+      "share": 0.7612,
+      "output": 20,
+      "resultTokensEst": 0,
+      "carryEst": 0
+    },
+    {
+      "key": "Bash: gradlew :*:test",
+      "category": "build/test/wait",
+      "uses": 1,
+      "tokens": 210,
+      "share": 0.1567,
+      "output": 10,
+      "resultTokensEst": 10,
+      "carryEst": 0
+    },
+    {
+      "key": "Read",
+      "category": "read/search",
+      "uses": 1,
+      "tokens": 110,
+      "share": 0.0821,
+      "output": 10,
+      "resultTokensEst": 100,
+      "carryEst": 100
+    }
+  ],
+  "results": [
+    {
+      "key": "Read",
+      "tokensEst": 100,
+      "carryEst": 100,
+      "what": "build.gradle.kts"
+    },
+    {
+      "key": "Bash: gradlew :*:test",
+      "tokensEst": 10,
+      "carryEst": 0,
+      "what": "./gradlew :app:core:test --console=plain 2>&1 | tail -20"
+    }
+  ],
+  "prompts": [
+    {
+      "text": "go on",
+      "ts": "2026-09-01T10:17:00.000Z",
+      "calls": 2,
+      "tokens": 1020
+    },
+    {
+      "text": "run the tests",
+      "ts": "2026-09-01T10:10:00.000Z",
+      "calls": 2,
+      "tokens": 320
+    }
+  ],
+  "warnings": []
+}

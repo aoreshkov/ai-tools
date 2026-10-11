@@ -13,6 +13,7 @@ Thumbs.db
 
 # Plugin eval output
 review-kit/evals/results/
+token-audit/evals/results/
 
 # review-kit reports written at the repository root (default `out`)
 /review-report*.md

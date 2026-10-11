@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "aoreshkov-ai-tools",
-  "description": "Claude Code plugins for Kotlin/JVM development and Oracle Forms modernization: multi-lens code review, Kotlin/Java library sources, and Oracle Forms module inspection.",
+  "description": "Claude Code plugins for Kotlin/JVM development and Oracle Forms modernization: multi-lens code review, Kotlin/Java library sources, Oracle Forms module inspection, and a token-use audit of past sessions.",
   "owner": {
     "name": "Atanas Oreshkov",
     "url": "https://github.com/aoreshkov"
@@ -13,6 +13,13 @@
       "category": "code-review",
       "tags": ["code-review", "workflow", "kotlin", "kmp"],
       "description": "Multi-lens code review as a dynamic workflow: plans the lenses that fit the repo, fans out read-only reviewers, adversarially verifies each finding, and writes one ranked report."
+    },
+    {
+      "name": "token-audit",
+      "source": "./token-audit",
+      "category": "productivity",
+      "tags": ["tokens", "usage", "cost", "context", "sessions"],
+      "description": "Ranks a project's Claude Code sessions by token use and breaks the costliest down by action, large tool result and prompt, with habits to change. Needs Node 20+."
     },
     {
       "name": "kotlin-lib",

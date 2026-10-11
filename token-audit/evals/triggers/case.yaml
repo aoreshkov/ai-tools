@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: triggers
+description: >
+  A natural question about token use, with no skill named, must make Claude invoke the
+  token-audit skill. Checks the skill description, not the figures: the eval sandbox has
+  no session transcripts, so the skill reports that and stops. A manual pre-release gate,
+  not CI: run with --ablation none.
+tags: [trigger]

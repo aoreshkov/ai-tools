@@ -1,0 +1,28 @@
+{
+  "format": "token-audit/1",
+  "command": "categories",
+  "session": {
+    "id": "parallel",
+    "title": ""
+  },
+  "totals": {
+    "calls": 2,
+    "total": 500
+  },
+  "parallelCalls": 1,
+  "categories": [
+    {
+      "name": "read/search",
+      "uses": 3,
+      "tokens": 300,
+      "share": 0.6
+    },
+    {
+      "name": "git",
+      "uses": 1,
+      "tokens": 200,
+      "share": 0.4
+    }
+  ],
+  "warnings": []
+}
