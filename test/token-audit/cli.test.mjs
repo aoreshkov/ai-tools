@@ -165,7 +165,7 @@ test('results go to stdout, warnings to stderr', () => {
     '3 unparsable transcript line(s',
     '3 assistant record(s) without ',
   ])
-  assert.match(r.stderr, new RegExp(`newer than the tested ${TESTED_MAX_VERSION.replace(/\./g, '\\.')}; figures may be wrong`))
+  assert.ok(r.stderr.includes(`newer than the tested ${TESTED_MAX_VERSION}; figures may be wrong`), r.stderr)
 })
 
 test('no version warning for transcripts at or below the tested version', () => {
