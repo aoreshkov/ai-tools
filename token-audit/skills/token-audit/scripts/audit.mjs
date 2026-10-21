@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // token-audit: which Claude Code sessions, actions and prompts used the most tokens.
-// Reads local session transcripts; Node 20+, built-ins only. Run with --help for usage.
+// Reads local session transcripts; Node 22+ (still runs on 20), built-ins only. Run with --help for usage.
 //
 // Exit codes: 0 ok, 1 usage error, 2 nothing found. --exit-zero reports errors on stdout
 // and exits 0, for callers where a failing command aborts (skill `!` injection).
