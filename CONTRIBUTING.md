@@ -12,7 +12,7 @@ marketplace that lists all five.
 
 ## Prerequisites
 
-- Node 20 or later.
+- Node 22 or later (Active or Maintenance LTS).
 - Claude Code, for `claude plugin validate` and for trying the plugin.
 
 ## Checks

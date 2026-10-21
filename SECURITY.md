@@ -2,10 +2,12 @@
 
 ## Supported versions
 
-| Version                          | Supported |
-| -------------------------------- | --------- |
-| Latest `review-kit` release (0.x) | ✅        |
-| Older releases                   | ❌        |
+| Version                            | Supported |
+| ---------------------------------- | --------- |
+| Latest `review-kit` release (0.x)  | ✅        |
+| Latest `token-audit` release (0.x) | ✅        |
+| Latest `token-meter` release (0.x) | ✅        |
+| Older releases                     | ❌        |
 
 `kotlin-lib` and `oracle-forms` are developed in their own repositories; report issues
 in them there ([kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp/security),
@@ -34,3 +36,20 @@ Reports about these are particularly relevant:
 - A report path (`out`) or planner output that reaches outside the repository.
 - A marketplace entry whose `ref`/`sha` pin can be made to install something other than
   the released plugin.
+
+`token-audit` reads the session transcripts under your Claude config directory and prints
+prompt snippets, titles and commands from them into a model's context. Reports about
+these are particularly relevant:
+
+- A path, session id or `--project` value that makes the script read outside the Claude
+  config directory or the folder it was given.
+- Transcript text that reaches the model as instructions rather than data, or that breaks
+  out of the output's size limits.
+
+`token-meter` is a mod: it runs inside Claude Code with your permissions. It reads only
+git's `HEAD` (and a worktree's `.git` file), keeps only whether its band is hidden in its
+own plugin store, runs no process and makes no network call. Reports about these are
+particularly relevant:
+
+- Any file read beyond those, any other write, or any process or network access.
+- A hook that changes the event it handles instead of passing it on unchanged.

@@ -43,7 +43,7 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
 
 ## Checks
 
-Run all six before every commit (Node 20 or later).
+Run all six before every commit (Node 22 or later).
 
 ```bash
 node --test
@@ -69,7 +69,8 @@ claude plugin test ./token-meter
 
 ## Rules for token-audit
 
-- Node 20+, built-ins only, ESM. `transcript.mjs` and `attribute.mjs` stay pure (no
+- Node 22+ is the documented floor, but the code stays Node 20 compatible until something
+  needs newer. Built-ins only, ESM. `transcript.mjs` and `attribute.mjs` stay pure (no
   filesystem, no output); only `locate.mjs` touches disk.
 - The transcript format is internal to Claude Code. Read as few fields as possible,
   count what is skipped, and warn instead of guessing. After checking a newer release's

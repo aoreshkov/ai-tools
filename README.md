@@ -8,7 +8,7 @@ plugin marketplace.
 | Plugin                          | What it does                                                                 | Needs                         | Lives in                                                               |
 | ------------------------------- | ---------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
 | [`review-kit`](#review-kit)     | Multi-lens code review as a dynamic workflow                                 | Dynamic workflows turned on   | this repository                                                        |
-| [`token-audit`](#token-audit)   | Ranks past sessions by token use and shows which actions and prompts drove it | Node 20+ on `PATH`           | this repository                                                        |
+| [`token-audit`](#token-audit)   | Ranks past sessions by token use and shows which actions and prompts drove it | Node 22+ on `PATH`           | this repository                                                        |
 | [`token-meter`](#token-meter)   | A live band above the prompt: folder, branch, model, effort, context, limits, cost | Claude Code 2.1.287+          | this repository                                                        |
 | [`kotlin-lib`](#kotlin-lib)     | MCP server and skills that read the real sources of any Maven Kotlin/Java library | Docker                   | [aoreshkov/kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp)     |
 | [`oracle-forms`](#oracle-forms) | MCP server and a skill that read Oracle Forms modules (`.fmb`, `.mmb`, `.pll`, `.olb`) | A JDK 21+ on `PATH`     | [aoreshkov/oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp) |
@@ -499,7 +499,7 @@ can show its effort, and passes every request on unchanged.
 
 The workflow script is tested with no model calls: `test/review.test.mjs` runs it
 against stubbed `agent()`, `pipeline()` and `parallel()` and checks the plan, the caps,
-the verification partition, and every fail-loud path. It needs Node 20 or later. CI runs
+the verification partition, and every fail-loud path. It needs Node 22 or later. CI runs
 the same commands on every pull request and every push to `main`, with no model calls.
 
 ```bash
@@ -611,5 +611,5 @@ anyway.
 
 ## Licence
 
-`review-kit`, `token-audit` and this repository: MIT. `kotlin-lib` and `oracle-forms`: Apache-2.0, in
-their own repositories.
+`review-kit`, `token-audit`, `token-meter` and this repository: MIT. `kotlin-lib` and
+`oracle-forms`: Apache-2.0, in their own repositories.

@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in review-kit or the marketplace doesn't work as documented
+description: Something in a plugin hosted here (review-kit, token-audit, token-meter) or the marketplace doesn't work as documented
 title: "[bug]: "
 labels: ["bug"]
 body:
@@ -16,6 +16,8 @@ body:
       label: Component
       options:
         - review-kit
+        - token-audit
+        - token-meter
         - Marketplace (install, update, listing)
     validations:
       required: true
@@ -25,20 +27,21 @@ body:
       label: What happened?
       description: What did you run, what did you expect, what happened instead?
       placeholder: |
-        Ran `/review-kit:review` in incremental mode since origin/main and …
+        Ran `/review-kit:review` in incremental mode since origin/main, or
+        `/token-audit:token-audit 10`, or `/token-meter hide`, and …
     validations:
       required: true
   - type: textarea
     id: args
     attributes:
-      label: Workflow arguments (if applicable)
-      description: The arguments the workflow ran with, and the report's coverage section if one was written.
+      label: Arguments (if applicable)
+      description: For review-kit, the arguments the workflow ran with and the report's coverage section if one was written; for token-audit, the command and flags.
       render: json
   - type: input
     id: version
     attributes:
       label: Plugin and Claude Code versions
-      placeholder: "review-kit 0.1.0, Claude Code 2.1.294"
+      placeholder: "token-meter 0.2.0, Claude Code 2.1.306"
     validations:
       required: true
   - type: input

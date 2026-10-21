@@ -19,7 +19,7 @@
       "source": "./token-audit",
       "category": "productivity",
       "tags": ["tokens", "usage", "cost", "context", "sessions"],
-      "description": "Ranks a project's Claude Code sessions by token use and breaks the costliest down by action, large tool result and prompt, with habits to change. Needs Node 20+."
+      "description": "Ranks a project's Claude Code sessions by token use and breaks the costliest down by action, large tool result and prompt, with habits to change. Needs Node 22+."
     },
     {
       "name": "token-meter",

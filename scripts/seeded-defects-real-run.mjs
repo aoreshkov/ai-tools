@@ -7,7 +7,7 @@
 // no Workflow tool and calls the agents itself. This script runs the same case
 // with CLAUDE_CODE_WORKFLOWS=1 and none of your user settings.
 //
-// It calls the model: a manual pre-release check, never CI. Node 20 or later,
+// It calls the model: a manual pre-release check, never CI. Node 22 or later,
 // and `bash` (Git Bash on Windows) for the scaffold script.
 //
 //   node scripts/seeded-defects-real-run.mjs [--keep]
