@@ -1,5 +1,5 @@
 ---
 type: regex
 target: trace
-pattern: '\\*"ok\\*"\s*:\s*true\s*,\s*\\*"mode\\*"\s*:\s*\\*"(?:full|incremental)\\*"\s*,\s*\\*"report\\*"\s*:\s*\\*"review-report\.md\\*"'
+pattern: '\{(?=[^{}]*?\\*"ok\\*"\s*:\s*true\b)(?=[^{}]*?\\*"mode\\*"\s*:\s*\\*"(?:full|incremental)\\*")(?=[^{}]*?\\*"report\\*"\s*:\s*\\*"review-report\.md\\*")'
 ---

@@ -51,7 +51,8 @@ export const meta = {
 //   plan             a previous result's `plan`; skips the planner so module
 //                    names, pairs and reviewer prompts match that run
 //   pairs            'lens @ module' labels to run, e.g. a previous result's
-//                    coverage.cappedPairs; narrows, never widens
+//                    coverage.cappedPairs; narrows, never widens. The
+//                    applicable pairs it leaves out are coverage.unselectedPairs
 //   carry            a previous result's `confirmed`; reported as carried
 //                    (not re-verified) unless this run checks the same finding
 //   verifyOnly       a previous result's `unverified`; no planner or reviewer
@@ -734,7 +735,8 @@ function reviewPrompt(job) {
 }
 
 // One adversarial check. Never throws: a verifier that dies or is blocked is a
-// tooling failure on this finding, not a reason to lose it.
+// tooling failure on this finding, not a reason to lose it. A failure keeps
+// its cause in `verifyError`, so a bad verifier override says what went wrong.
 async function verifyOne(finding) {
   try {
     const verdict = await agent(verifyPrompt(finding), withOverrides('verifier', {
@@ -743,21 +745,21 @@ async function verifyOne(finding) {
       agentType: VERIFIER,
       schema: VERDICT_SCHEMA,
     }))
+    if (!verdict) return { ...finding, verdict: null, verifyState: 'verifier-failed', verifyError: NO_ANSWER }
     return {
       ...finding,
-      verdict: verdict || null,
+      verdict: verdict,
       // A verdict that rules neither way is an answer, but not a check.
-      verifyState: !verdict
-        ? 'verifier-failed'
-        : typeof verdict.refuted === 'boolean' ? 'checked' : 'verifier-inconclusive',
+      verifyState: typeof verdict.refuted === 'boolean' ? 'checked' : 'verifier-inconclusive',
     }
   } catch (err) {
-    return { ...finding, verdict: null, verifyState: 'verifier-failed' }
+    return { ...finding, verdict: null, verifyState: 'verifier-failed', verifyError: causeOf(err) }
   }
 }
 
 // An earlier result's unverified entry, cut back to the fields a verifier
-// reads; anything else it carried (an old verifyState) must not leak through.
+// reads; anything else it carried (an old verifyState or verifyError) must not
+// leak through.
 function recheckFinding(f) {
   const text = value => typeof value === 'string' ? value : ''
   return {
@@ -839,18 +841,50 @@ function plannerText(label, text) {
 // A coverage fact whose items are names or paths the planner, the caller or
 // the repository supplied. The sentence is the runner's; the items are fenced.
 const COVERAGE_LISTS = [
-  'blockedPairs', 'cappedPairs', 'unmappedChanged', 'unmatchedModules', 'unmatchedLenses',
-  'unmatchedPairs', 'droppedLenses', 'droppedPaths', 'rejectedModules', 'rejectedLenses',
-  'unscopedLenses', 'unknownAppliesTo', 'unpairedModules', 'unpairedLenses', 'unpairedChanged',
+  'blockedPairs', 'cappedPairs', 'unselectedPairs', 'unmappedChanged', 'unmatchedModules',
+  'unmatchedLenses', 'unmatchedPairs', 'droppedLenses', 'droppedPaths', 'rejectedModules',
+  'rejectedLenses', 'unscopedLenses', 'unknownAppliesTo', 'unpairedModules', 'unpairedLenses',
+  'unpairedChanged',
 ]
 
 function factList(sentence, label, items) {
   return items.length ? sentence + '\n' + repoData(label, items.join('\n')) : ''
 }
 
+// What agent() reports when it has no answer, per the workflow runtime: the
+// user skipped the agent, or it died on a terminal API error after retries.
+const NO_ANSWER = 'no answer: skipped by the user, or died on an API error after retries'
+// A pipeline stage or parallel thunk that throws becomes null, and the runtime
+// keeps no error. Every stage here catches its own, so this should not happen.
+const DROPPED = 'the runtime dropped this item and kept no error'
+const CAUSE_CHARS = 300
+
+// An error message on one line and of bounded length: it reaches logs, the
+// result and the reporter's prompt.
+function causeOf(err) {
+  const text = shown(err && err.message ? err.message : String(err))
+  return text.length > CAUSE_CHARS ? text.slice(0, CAUSE_CHARS) + '...' : text
+}
+
+// Distinct causes, in first-seen order, each with everything it hit. `kind`
+// is 'pairs' or 'findings'.
+function groupCauses(entries, kind) {
+  const byCause = new Map()
+  for (const e of entries) {
+    if (!byCause.has(e.cause)) byCause.set(e.cause, [])
+    byCause.get(e.cause).push(e.item)
+  }
+  return Array.from(byCause, ([cause, items]) => ({ cause: cause, [kind]: items }))
+}
+
+function causeLine(fc) {
+  return fc.cause + ' -> ' + (fc.pairs ? 'pairs: ' + fc.pairs.join(', ') : 'findings: ' + fc.findings.join(', '))
+}
+
 function reportPrompt(payload) {
   const c = payload.coverage
   const v = payload.verification
+  const continuing = Array.isArray(A.carry) && A.carry.length > 0
   return [
     'Write the report for this multi-lens review to `' + OUT + '`.',
     '',
@@ -874,9 +908,11 @@ function reportPrompt(payload) {
       ? 'Verify-only run: no reviewer ran, so this run adds no module x lens coverage. ' +
         VERIFY_ONLY.length + ' findings an earlier run left unverified were sent to verifiers. ' +
         'The earlier run\'s own coverage gaps are not repeated here; say so in Coverage gaps.'
-      : 'Module x lens pairs: ' + c.planned + ' applicable, ' + c.reviewed + ' reviewed successfully, ' +
+      : 'Module x lens pairs: ' + (c.unselectedPairs.length
+        ? c.planned + ' selected of ' + (c.planned + c.unselectedPairs.length) + ' applicable'
+        : c.planned + ' applicable') + ', ' + c.reviewed + ' reviewed successfully, ' +
         c.capped + ' never run because of the maxJobs cap, ' + c.blocked + ' blocked or failed.',
-    COVERAGE_LISTS.some(key => c[key].length)
+    COVERAGE_LISTS.some(key => c[key].length) || c.failureCauses.length
       ? 'Each list below is fenced, one item per line: list every item as written.'
       : '',
     VERIFY_ONLY
@@ -884,11 +920,19 @@ function reportPrompt(payload) {
       : c.blockedPairs.length
         ? factList('Blocked or failed pairs:', 'blocked pairs', c.blockedPairs)
         : 'No pair was blocked or failed.',
+    factList('Why pairs were blocked or findings went unverified, one cause per line with what it hit:',
+      'failure causes', c.failureCauses.map(causeLine)),
     VERIFY_ONLY
       ? ''
       : c.cappedPairs.length
         ? factList('Pairs never run because of the cap:', 'capped pairs', c.cappedPairs)
         : 'Nothing was dropped by the cap.',
+    factList('Applicable pairs not selected in this run, so not reviewed here:',
+      'unselected pairs', c.unselectedPairs),
+    c.unselectedPairs.length && continuing
+      ? 'This run continues an earlier one and carries its confirmed findings, so the unselected ' +
+        'pairs may be covered by the run being continued. Say so; do not call them gaps of that run.'
+      : '',
     factList('Changed files outside every planned module, so never reviewed:',
       'unmapped changed files', c.unmappedChanged),
     factList('Requested modules that do not exist in the plan, so never reviewed:',
@@ -1031,11 +1075,12 @@ if (VERIFY_ONLY) {
   log('Verify-only run: ' + rechecks.length + ' findings from an earlier run go to verifiers; ' +
     'no planner or reviewer runs.')
   const checked = await parallel(rechecks.map(f => () => verifyOne(f)))
-  const coverage = { planned: 0, reviewed: 0, capped: 0, blocked: 0, malformedFindings: 0 }
+  const coverage = { planned: 0, reviewed: 0, capped: 0, blocked: 0, malformedFindings: 0, failureCauses: [] }
   for (const key of COVERAGE_LISTS) coverage[key] = []
   return await finish(
     SUPPLIED ? { repoSummary: SUPPLIED.repoSummary, modules: SUPPLIED.modules, lenses: SUPPLIED.lenses } : null,
-    checked.map((entry, i) => entry || { ...rechecks[i], verdict: null, verifyState: 'verifier-failed' }),
+    checked.map((entry, i) => entry ||
+      { ...rechecks[i], verdict: null, verifyState: 'verifier-failed', verifyError: DROPPED }),
     coverage,
   )
 }
@@ -1063,8 +1108,12 @@ if (SUPPLIED) {
   }
 
   if (!raw) {
-    log('No lens ran: the planner ' + (planError ? 'failed (' + planError + ')' : 'was blocked or died') +
-      '. Check that the review-kit agents resolve under the prefix "' + PREFIX + '"' +
+    // Name the agent type that was tried. agentPrefix is the fix only when it
+    // built that name; an `agents.planner` override is the caller's own.
+    log('No lens ran: the planner ' + (planError ? 'failed (' + planError + ')' : 'gave ' + NO_ANSWER) +
+      '. Check that agent type "' + PLANNER + '" resolves' +
+      (ROLES.planner ? '' : ' (is the plugin loaded? Pass agentPrefix "" when the agents live in ' +
+        '.claude/agents/)') +
       (MODELS.planner ? ', that model "' + MODELS.planner + '" is available to you' : '') +
       (EFFORTS.planner ? ', that its model supports effort "' + EFFORTS.planner + '"' : '') + '.')
     return { ok: false, reason: 'planner-unavailable', detail: planError, report: null }
@@ -1196,19 +1245,16 @@ if (MODE === 'incremental') {
 // names - produces no pair, and an unknown name in an otherwise usable list
 // silently loses that pair. Both are measured against the whole plan, so a
 // module the caller excluded or that has no changes does not count, and both
-// are coverage facts. A `pairs` run asks for exact pairs, not for lenses, so
-// it does not repeat what the run that produced those pairs already reported.
+// are coverage facts. A `pairs` run reports them too: the run it continues may
+// have stopped at needs-confirmation, which writes no report, so every report
+// has to stand alone.
 const planNames = plan.modules.map(m => m.name)
-const unscopedLenses = WANT_PAIRS
-  ? []
-  : lenses.filter(l => !planNames.some(n => appliesTo(l, n))).map(l => l.id)
+const unscopedLenses = lenses.filter(l => !planNames.some(n => appliesTo(l, n))).map(l => l.id)
 const unknownAppliesTo = []
-if (!WANT_PAIRS) {
-  for (const l of lenses) {
-    if (!Array.isArray(l.appliesTo)) continue
-    for (const n of unique(l.appliesTo)) {
-      if (n !== '*' && planNames.indexOf(n) === -1) unknownAppliesTo.push(l.id + ': ' + shown(n))
-    }
+for (const l of lenses) {
+  if (!Array.isArray(l.appliesTo)) continue
+  for (const n of unique(l.appliesTo)) {
+    if (n !== '*' && planNames.indexOf(n) === -1) unknownAppliesTo.push(l.id + ': ' + shown(n))
   }
 }
 if (unscopedLenses.length) {
@@ -1268,23 +1314,20 @@ if (!applicable.length) {
 // the changed files that only such modules hold, which no reviewer will read.
 // A lens the planner chose but scoped only to modules the caller excluded, or
 // that did not change, is the requested narrowing at work, not a gap. A `pairs`
-// run asks for exact pairs, and the run that produced them reported the rest.
-let unpairedModules = []
+// run names them as well, for the same reason as the lens facts above.
+const paired = modules.filter(m => lenses.some(l => appliesTo(l, m.name)))
+const unpaired = modules.filter(m => paired.indexOf(m) === -1)
+const unpairedModules = unpaired.map(m => m.name)
 let unpairedLenses = []
 let unpairedChanged = []
-if (!WANT_PAIRS) {
-  const paired = modules.filter(m => lenses.some(l => appliesTo(l, m.name)))
-  const unpaired = modules.filter(m => paired.indexOf(m) === -1)
-  unpairedModules = unpaired.map(m => m.name)
-  if (WANT_LENSES.length) {
-    unpairedLenses = lenses
-      .filter(l => !modules.some(m => appliesTo(l, m.name)) && unscopedLenses.indexOf(l.id) === -1)
-      .map(l => l.id)
-  }
-  if (MODE === 'incremental') {
-    const read = new Set(paired.flatMap(m => m.changed))
-    unpairedChanged = unique(unpaired.flatMap(m => m.changed)).filter(f => !read.has(f))
-  }
+if (WANT_LENSES.length) {
+  unpairedLenses = lenses
+    .filter(l => !modules.some(m => appliesTo(l, m.name)) && unscopedLenses.indexOf(l.id) === -1)
+    .map(l => l.id)
+}
+if (MODE === 'incremental') {
+  const read = new Set(paired.flatMap(m => m.changed))
+  unpairedChanged = unique(unpaired.flatMap(m => m.changed)).filter(f => !read.has(f))
 }
 if (unpairedModules.length) {
   log('Modules no selected lens applies to, never reviewed: ' + unpairedModules.join(', ') +
@@ -1298,9 +1341,13 @@ if (unpairedLenses.length) {
 // `pairs` narrows to exact module x lens pairs - typically the previous run's
 // coverage.cappedPairs - keeping the breadth-first order. It is a filter, not
 // a widening: a label that names no applicable pair is logged, and a list
-// that matches nothing (including an empty one) stops the run.
+// that matches nothing (including an empty one) stops the run. The applicable
+// pairs it leaves out are reported as unselected, apart from the capped ones:
+// the caller chose to skip them, and a continuation may have reviewed them in
+// the run it continues.
 let allJobs = applicable
 let unmatchedPairs = []
+let unselectedPairs = []
 if (WANT_PAIRS) {
   const wanted = WANT_PAIRS.map(normPair)
   allJobs = applicable.filter(job => wanted.indexOf(pairLabel(job)) !== -1)
@@ -1323,6 +1370,7 @@ if (WANT_PAIRS) {
     log('Requested pairs that match nothing and were skipped: ' + unmatched.join(', ') + '.')
   }
   unmatchedPairs = unmatched
+  unselectedPairs = applicable.filter(job => allJobs.indexOf(job) === -1).map(pairLabel)
   log('pairs: ' + allJobs.length + ' of ' + applicable.length + ' applicable pairs selected.')
 }
 
@@ -1374,18 +1422,32 @@ if (!VERIFY) log('Verification is off: every finding will be reported as unconfi
 const results = await pipeline(
   jobs,
 
-  job => agent(reviewPrompt(job), withOverrides('reviewer', {
-    label: pairLabel(job),
-    phase: 'Review',
-    agentType: REVIEWER,
-    schema: FINDINGS_SCHEMA,
-  })),
+  // Caught here, not left to the pipeline: a stage that throws becomes null
+  // and its error is lost, and a bad reviewer override would then block every
+  // pair with no reason given anywhere.
+  async job => {
+    try {
+      const reviewed = await agent(reviewPrompt(job), withOverrides('reviewer', {
+        label: pairLabel(job),
+        phase: 'Review',
+        agentType: REVIEWER,
+        schema: FINDINGS_SCHEMA,
+      }))
+      return reviewed ? { reviewed: reviewed } : { error: NO_ANSWER }
+    } catch (err) {
+      return { error: causeOf(err) }
+    }
+  },
 
-  (reviewed, job) => {
+  (answer, job) => {
     const pair = pairLabel(job)
+    if (answer.error) return { pair: pair, blocked: true, findings: [], error: answer.error }
+    const reviewed = answer.reviewed
     // A reply with no findings list is a failed review, not a clean one: an
     // empty module and an unusable answer must not look the same in coverage.
-    if (!reviewed || !Array.isArray(reviewed.findings)) return { pair: pair, blocked: true, findings: [] }
+    if (!Array.isArray(reviewed.findings)) {
+      return { pair: pair, blocked: true, findings: [], error: 'the reviewer replied without a findings list' }
+    }
     // An entry that is not an object cannot be read, and reading it would
     // throw and turn the whole pair into a blocked one. One with no title, file
     // or integer line cannot be pointed at, and as `carry` it would stop the
@@ -1429,13 +1491,15 @@ const results = await pipeline(
       return {
         ...state,
         findings: checked
-          .map((entry, i) => entry || { ...toCheck[i], verdict: null, verifyState: 'verifier-failed' })
+          .map((entry, i) => entry ||
+            { ...toCheck[i], verdict: null, verifyState: 'verifier-failed', verifyError: DROPPED })
           .concat(overBudget),
       }
     } catch (err) {
+      const cause = causeOf(err)
       return {
         ...state,
-        findings: state.findings.map(f => ({ ...f, verdict: null, verifyState: 'verifier-failed' })),
+        findings: state.findings.map(f => ({ ...f, verdict: null, verifyState: 'verifier-failed', verifyError: cause })),
       }
     }
   },
@@ -1443,9 +1507,11 @@ const results = await pipeline(
 
 // -------------------------------------------------------------- aggregate --
 
-const settled = results.map((r, i) => r || { pair: pairLabel(jobs[i]), blocked: true, findings: [] })
+const settled = results.map((r, i) => r || { pair: pairLabel(jobs[i]), blocked: true, findings: [], error: DROPPED })
 
 const blockedPairs = settled.filter(r => r.blocked).map(r => r.pair)
+const reviewCauses = groupCauses(settled.filter(r => r.blocked).map(r => ({ cause: r.error, item: r.pair })), 'pairs')
+for (const fc of reviewCauses) log('Blocked: ' + causeLine(fc) + '.')
 const malformedFindings = settled.reduce((sum, r) => sum + (r.malformed || 0), 0)
 if (malformedFindings) {
   log(malformedFindings + ' reviewer findings were not objects or lacked a title, file or integer ' +
@@ -1459,6 +1525,7 @@ return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), [])
   blocked: blockedPairs.length,
   blockedPairs: blockedPairs,
   cappedPairs: droppedJobs.map(pairLabel),
+  unselectedPairs: unselectedPairs,
   unmappedChanged: unmappedChanged,
   unmatchedModules: unmatchedModules,
   unmatchedLenses: unmatchedLenses,
@@ -1473,6 +1540,7 @@ return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), [])
   unpairedLenses: unpairedLenses,
   unpairedChanged: unpairedChanged,
   malformedFindings: malformedFindings,
+  failureCauses: reviewCauses,
 })
 
 // ---------------------------------------------------------------- report --
@@ -1480,7 +1548,15 @@ return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), [])
 // Shared by a review run and a verifyOnly run: sorts every finding by its
 // verdict, folds in `carry`, has the reporter write the file, and builds the
 // result. `plan` is null only for a verifyOnly run that was given none.
-async function finish(plan, everyFinding, coverage) {
+async function finish(plan, everyFinding, reviewCoverage) {
+  // Reviewer causes arrive with the coverage; verifier causes are added here,
+  // where a review run and a verifyOnly run meet.
+  const verifyCauses = groupCauses(everyFinding
+    .filter(f => f.verifyState === 'verifier-failed')
+    .map(f => ({ cause: f.verifyError || DROPPED, item: f.file + ':' + f.line })), 'findings')
+  for (const fc of verifyCauses) log('Unverified: ' + causeLine(fc) + '.')
+  const coverage = { ...reviewCoverage, failureCauses: reviewCoverage.failureCauses.concat(verifyCauses) }
+
   // Nulls are counted, never filtered away: a blocked agent means a lens went
   // unread, and that has to reach the report as a gap rather than vanish.
   //

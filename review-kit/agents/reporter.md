@@ -55,9 +55,11 @@ these headings, in this order, so tools that read the report can find each secti
   where it sharpened or re-graded the finding.
 - `## Unverified` - findings that were not adversarially checked, clearly marked
   unconfirmed. Never mix these in with the confirmed ones.
-- `## Coverage gaps` - the module x lens pairs that were skipped, blocked, or capped, from
-  the numbers given in the prompt. State them plainly; a reader must not mistake this
-  report for full coverage when it is not.
+- `## Coverage gaps` - the module x lens pairs that were skipped, blocked, capped, or not
+  selected, from the numbers given in the prompt, and the cause of each failure the prompt
+  lists. State them plainly; a reader must not mistake this report for full coverage when
+  it is not. Pairs not selected in a run that continues an earlier one are named as such,
+  not as gaps of that earlier run, when the prompt says so.
 
 Keep every section heading even when it is empty, and say in one line that it is empty.
 Never write a refuted or dismissed finding into the report, in any section: one that
