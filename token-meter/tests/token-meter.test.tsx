@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { alertText, bar, branchOf, clip, dirsUp, gitDirOf, modelName, place, toMeter, until } from '../hooks/format'
+import { alertText, bar, branchOf, clip, dirsUp, gitDirOf, level, modelName, place, toMeter, tokens, until } from '../hooks/format'
 
 // 2026-10-11T12:00:00Z, the mock clock's start
 const NOW = Date.parse('2026-10-11T12:00:00Z')
@@ -73,6 +73,20 @@ describe('format', () => {
     expect(bar(-3)).toBe('░░░░░░░░░░')
   })
 
+  test('level turns warning at 70% and error at 90%', async () => {
+    expect(level(69)).toBe('success')
+    expect(level(70)).toBe('warning')
+    expect(level(89)).toBe('warning')
+    expect(level(90)).toBe('error')
+  })
+
+  test('tokens rounds before it picks the unit, so 999.5k reads 1.0M', async () => {
+    expect(tokens(50_000)).toBe('50k')
+    expect(tokens(999_499)).toBe('999k')
+    expect(tokens(999_500)).toBe('1.0M')
+    expect(tokens(1_000_000)).toBe('1.0M')
+  })
+
   test('until counts down to an ISO reset', async () => {
     expect(until('2026-10-11T14:10:00Z', NOW)).toBe('2h10m')
     expect(until('2026-10-13T15:00:00Z', NOW)).toBe('2d3h')
@@ -135,14 +149,91 @@ describe('hooks', () => {
     })
     on('session.measure', ($, e) => ({ changed: e.changed }))
 
-    await $.session.measure({ ...HOT, changed: ['context', 'rateLimits', 'cost'] })
-    await $.session.measure({ ...CALM, changed: ['context'] })
+    // The hook observes: what the engine answers comes back unchanged
+    expect(await $.session.measure({ ...HOT, changed: ['context', 'rateLimits', 'cost'] }))
+      .toEqual({ changed: ['context', 'rateLimits', 'cost'] })
+    expect(await $.session.measure({ ...CALM, changed: ['context'] })).toEqual({ changed: ['context'] })
 
     expect(statuses).toEqual(['context 92%, 7d limit 95%', undefined])
   })
 
+  test('session.start registers /token-meter, refreshes once a minute and passes the result on', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const { files } = stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
+    const registered: string[] = []
+    on('command.register', ($, e) => {
+      registered.push(e.name)
+      return { value: { command: e.name } }
+    })
+    on('session.start', () => ({ cwd: 'from the engine' }))
+    mock.store(on)
+
+    expect(await $.session.start({ cwd: 'C:\\work\\ai-tools', surface: 'terminal', isInteractive: true }))
+      .toEqual({ cwd: 'from the engine' })
+    expect(registered).toEqual(['token-meter'])
+
+    const bands = await Promise.all((['terminal', 'desktop'] as const).map(surface => $.ui.mount({ ...BAND, surface })))
+    for (const ui of bands) {
+      expect(await ui.find({ type: 'Text', text: /⎇ main$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: ' ↻2h10m' })).toBeDefined()
+    }
+
+    // A checkout outside the session, then a minute idle with no response to measure
+    files['C:/work/ai-tools/.git/HEAD'] = 'ref: refs/heads/next\n'
+    await clock.advance(60_000)
+    for (const ui of bands) {
+      expect(await ui.find({ type: 'Text', text: /⎇ next$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: ' ↻2h9m' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('session.start still resolves when /token-meter cannot be registered, and logs why', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
+    on('command.register', () => { throw new Error('name taken') })
+    const logs: { text: string; to: string }[] = []
+    on('ui.log', ($, e) => {
+      logs.push({ text: e.text, to: e.to })
+      return { value: undefined }
+    })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    mock.store(on)
+
+    expect(await $.session.start({ cwd: 'C:\\work\\ai-tools', surface: 'desktop', isInteractive: true }))
+      .toEqual({ cwd: 'C:\\work\\ai-tools' })
+    expect(logs).toHaveLength(1)
+    expect(logs[0]?.to).toBe('debug')
+    expect(logs[0]?.text).toMatch(/^\/token-meter not registered: /)
+  })
+
+  test('the context figure takes its level\'s colour, and the band shows tokens over the window', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+
+    await $.session.measure({ ...CALM, changed: ['context'] })
+    const calm = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    // A string query also matches the Text around the one meant, so these are anchored
+    expect((await calm.find({ type: 'Text', text: /^██░░░░░░░░ 25%$/ }))?.props.color).toBe('success')
+    expect(await calm.find({ type: 'Text', text: /^ 50k\/200k$/ })).toBeDefined()
+    await calm.unmount()
+
+    await $.session.measure({ ...HOT, changed: ['context', 'rateLimits'] })
+    const hot = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await hot.find({ type: 'Text', text: /^█████████░ 92%$/ }))?.props.color).toBe('error')
+    expect((await hot.find({ type: 'Text', text: /^95%$/ }))?.props.color).toBe('error')
+    expect(await hot.find({ type: 'Text', text: /^ 184k\/200k$/ })).toBeDefined()
+  })
+
   test('the band draws the figures on terminal and desktop, and hides on press', async ($, on) => {
     mock.clock(on, { now: NOW })
+    mock.store(on)
     stubSession(on)
     on('ui.status', () => ({ value: undefined }))
     on('session.measure', ($, e) => ({ changed: e.changed }))
@@ -281,22 +372,89 @@ describe('hooks', () => {
     expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
   })
 
-  test('the figures come back after /clear', async ($, on) => {
+  test('the figures come back after /clear, /resume and /branch, and the hook passes the result on', async ($, on) => {
     mock.clock(on, { now: NOW })
     stubSession(on)
     on('ui.status', () => ({ value: undefined }))
     on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
-    on('classic.SessionStart', () => ({}))
+    on('classic.SessionStart', () => ({ additionalContext: ['from the engine'] }))
     on('ui.render', ENGINE_BAND)
+    mock.store(on)
 
-    await $.classic.SessionStart({ source: 'clear' })
+    for (const source of ['clear', 'resume', 'fork'] as const) {
+      expect(await $.classic.SessionStart({ source })).toEqual({ additionalContext: ['from the engine'] })
+      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+      expect(await ui.find({ type: 'Text', text: '██░░░░░░░░ 25%' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
 
-    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    expect(await ui.find({ type: 'Text', text: '██░░░░░░░░ 25%' })).toBeDefined()
+  test('hiding and showing the band is kept in the store, past the session', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    on('ui.render', ENGINE_BAND)
+    // The store beneath the plugin, kept here so the test can read what was written
+    const kept = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+    on('store.set', ($, e) => {
+      kept.set(e.key, e.value)
+      return { value: undefined }
+    })
+
+    await $.session.measure({ ...CALM, changed: ['context'] })
+    const shown = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    await shown.press({ key: 'hide' })
+    expect(kept.get('hidden')).toBe(true)
+    await $.command.run({ ...COMMAND, args: 'show' })
+    expect(kept.get('hidden')).toBe(false)
+    await $.command.run({ ...COMMAND, args: 'hide' })
+    expect(kept.get('hidden')).toBe(true)
+  })
+
+  // /clear, /resume and /branch reset $.state; a test's state starts out that way, so
+  // the store alone says the band was hidden
+  for (const source of ['clear', 'resume', 'fork'] as const) {
+    test(`a band hidden before ${source} is still hidden after it`, async ($, on) => {
+      mock.clock(on, { now: NOW })
+      stubSession(on)
+      on('ui.status', () => ({ value: undefined }))
+      on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
+      on('classic.SessionStart', () => ({}))
+      on('ui.render', ENGINE_BAND)
+      mock.store(on, { hidden: true })
+
+      await $.classic.SessionStart({ source })
+      for (const surface of ['terminal', 'desktop'] as const) {
+        const ui = await $.ui.mount({ ...BAND, surface })
+        expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+        await ui.unmount()
+      }
+    })
+  }
+
+  test('a band hidden in an earlier session starts hidden', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('ui.render', ENGINE_BAND)
+    mock.store(on, { hidden: true })
+
+    await $.session.start({ cwd: 'C:\\work\\ai-tools', surface: 'terminal', isInteractive: true })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ ...BAND, surface })
+      expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+      await ui.unmount()
+    }
   })
 
   test('/token-meter hide and show toggle the band', async ($, on) => {
     mock.clock(on, { now: NOW })
+    mock.store(on)
     stubSession(on)
     on('ui.status', () => ({ value: undefined }))
     on('session.measure', ($, e) => ({ changed: e.changed }))

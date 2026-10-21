@@ -1,5 +1,17 @@
 # Changelog
 
+## token-meter 0.2.0
+
+- Hiding the band is kept until `/token-meter show`: through `/clear`, `/resume` and
+  `/branch`, which reset the session's state and used to bring the band back, and in later
+  sessions. It is stored under `hidden` in the mod's own `$.store`, the only thing it
+  writes.
+- Token counts round before they pick a unit, so 999,500 tokens read `1.0M`, not `1000k`.
+- Tests for `session.start` (the `/token-meter` command, its failure path, and the
+  once-a-minute refresh of the branch and reset times), the band's colours and token
+  counts, and that `session.measure` and `classic.SessionStart` pass their results on
+  unchanged.
+
 ## review-kit 0.2.0
 
 - A `pairs` run now reports the plan's coverage facts itself: lenses whose `appliesTo`
