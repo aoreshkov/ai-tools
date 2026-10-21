@@ -1,5 +1,28 @@
 # Changelog
 
+## review-kit 0.2.0
+
+- A `pairs` run now reports the plan's coverage facts itself: lenses whose `appliesTo`
+  names no planned module, `appliesTo` names that match no module, modules no lens
+  applies to, and in an incremental run the changed files only those modules hold. The
+  run it continues may have stopped at `needs-confirmation`, which writes no report, so
+  these facts used to reach no report at all.
+- New `coverage.unselectedPairs`: the applicable pairs a `pairs` run left out, kept apart
+  from `cappedPairs`. When the run carries an earlier run's findings, the report says
+  those pairs may be covered by that run.
+- New `coverage.failureCauses`: one entry per distinct cause, with the pairs it blocked
+  or the findings it left unverified. A reviewer that threw, returned nothing or replied
+  without a findings list, and a verifier that failed, now say why, so a bad `agents`,
+  `model` or `effort` override no longer fails silently. Unverified findings whose verifier
+  failed carry `verifyError`, and each cause is logged once.
+- The planner-unavailable message names the agent type that was tried, and mentions
+  `agentPrefix` only when the prefix built that name.
+- The `workflow-completed` eval grader no longer depends on the order of `ok`, `mode` and
+  `report` in the result, and its test now uses the result the script really returns.
+- `scripts/seeded-defects-real-run.mjs` prints claude's exit code, a spawn error or a
+  timeout, and exits 1 on any of them whatever the graders say. It passes the prompt on
+  stdin and runs an npm `.cmd` shim through a shell on Windows.
+
 ## token-meter 0.1.0
 
 New plugin in the marketplace, from this repository. It is a mod and needs Claude Code

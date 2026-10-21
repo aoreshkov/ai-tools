@@ -84,8 +84,10 @@ if (scaffold.status !== 0) {
   process.exit(2)
 }
 
+// The prompt goes in on stdin, not as an argument: it has newlines, which a
+// `.cmd` shim run through cmd.exe would split.
 const claudeArgs = [
-  '-p', PROMPT,
+  '-p',
   '--plugin-dir', PLUGIN,
   // None of your user settings, as in an eval: no hooks, no default mode, no
   // enableWorkflows. Workflows come from the environment variable below.
@@ -99,33 +101,68 @@ const claudeArgs = [
   '--verbose',
 ]
 
+// On Windows, `claude` is either the native claude.exe or an npm `.cmd` shim.
+// Node spawns an .exe directly, but a .cmd or .bat only through a shell, and
+// with a shell it joins the arguments unescaped, so the command line is built
+// here from fixed, quoted arguments.
+function claudeCommand(args) {
+  if (process.platform !== 'win32') return { file: 'claude', args, shell: false }
+  const dirs = (process.env.PATH || '').split(';').filter(Boolean)
+  for (const ext of ['.exe', '.cmd', '.bat']) {
+    const found = dirs.map(d => join(d, 'claude' + ext)).find(p => existsSync(p))
+    if (!found) continue
+    if (ext === '.exe') return { file: found, args, shell: false }
+    const quote = a => '"' + a.replace(/"/g, '""') + '"'
+    return { file: [found, ...args].map(quote).join(' '), args: [], shell: true }
+  }
+  return { file: 'claude', args, shell: false }
+}
+
 console.log('running claude -p (up to ' + TIMEOUT_S + 's, ' + MAX_TURNS + ' turns)...')
 const started = process.hrtime.bigint()
 const trace = await new Promise(done => {
-  const child = spawn('claude', claudeArgs, {
+  const command = claudeCommand(claudeArgs)
+  const child = spawn(command.file, command.args, {
     cwd: WORK,
     env: { ...process.env, CLAUDE_CODE_WORKFLOWS: '1' },
-    // No shell: the prompt has newlines, and cmd.exe would split it.
-    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: command.shell,
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
-  child.on('error', e => { err += String(e) })
   let out = ''
   let err = ''
-  child.stdout.on('data', d => { out += d })
-  child.stderr.on('data', d => { err += d })
+  let spawnError = ''
+  let timedOut = false
+  let settled = false
   const timer = setTimeout(() => {
+    timedOut = true
     err += '\n[timed out after ' + TIMEOUT_S + 's]'
     child.kill()
   }, TIMEOUT_S * 1000)
-  child.on('close', code => {
+  const finish = code => {
+    if (settled) return
+    settled = true
     clearTimeout(timer)
-    done({ text: out, stderr: err, code })
+    done({ text: out, stderr: err, code, spawnError, timedOut })
+  }
+  // A spawn failure may emit 'error' without a 'close', so either one settles.
+  child.on('error', e => {
+    spawnError = e.message
+    err += String(e) + '\n'
+    finish(null)
   })
+  child.stdout.on('data', d => { out += d })
+  child.stderr.on('data', d => { err += d })
+  child.stdin.on('error', () => {})
+  child.stdin.end(PROMPT)
+  child.on('close', finish)
 })
 const seconds = Number((process.hrtime.bigint() - started) / 1000000000n)
 
 writeFileSync(join(OUT, 'trace.jsonl'), trace.text)
 if (trace.stderr.trim()) writeFileSync(join(OUT, 'stderr.txt'), trace.stderr)
+// A run that did not finish cleanly fails the script whatever the graders
+// say: a killed or crashed session can still leave a report that passes them.
+const claudeFailed = trace.code !== 0 || trace.timedOut || !!trace.spawnError
 
 // ----------------------------------------------------------- grading --
 
@@ -170,6 +207,8 @@ if (existsSync(join(WORK, 'review-report.md'))) copyFileSync(join(WORK, 'review-
 const completed = results.find(r => r.name === 'workflow-completed')
 const summary = {
   claudeExit: trace.code,
+  timedOut: trace.timedOut,
+  spawnError: trace.spawnError || undefined,
   seconds,
   costUsd: final?.total_cost_usd,
   workflowToolAvailable: !!init?.tools?.includes('Workflow'),
@@ -181,6 +220,10 @@ const summary = {
 writeFileSync(join(OUT, 'result.json'), JSON.stringify(summary, null, 2))
 
 console.log('')
+console.log('claude exit ' + trace.code +
+  (trace.timedOut ? ' (timed out after ' + TIMEOUT_S + 's)' : '') +
+  (trace.spawnError ? ' (could not start: ' + trace.spawnError + ')' : ''))
+if (claudeFailed) console.log('claude did not finish cleanly; see stderr.txt. The grader results below do not count.')
 console.log('Workflow tool available: ' + (summary.workflowToolAvailable ? 'yes' : 'NO'))
 for (const r of results) console.log((r.ok ? 'PASS ' : 'FAIL ') + r.name.padEnd(22) + r.why)
 console.log('')
@@ -194,4 +237,4 @@ console.log('results: ' + OUT)
 if (KEEP) console.log('workspace kept: ' + WORK)
 else rmSync(WORK, { recursive: true, force: true })
 
-process.exit(summary.passed === summary.total ? 0 : 1)
+process.exit(!claudeFailed && summary.passed === summary.total ? 0 : 1)

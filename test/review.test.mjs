@@ -85,6 +85,12 @@ const quiet = {
   reporter: () => ({ written: true, detail: '0 findings' }),
 }
 
+const findsOneConfirmed = {
+  ...quiet,
+  reviewer: () => ({ findings: [finding('Bug', 'high')] }),
+  verifier: () => ({ refuted: false, reason: 'holds' }),
+}
+
 // The items of one fenced coverage list in the reporter prompt, checked to sit
 // right under the runner's own sentence; null when the list is absent.
 function fencedList(prompt, sentence, label) {
@@ -233,6 +239,18 @@ test('planner that throws stops the run with planner-unavailable', async () => {
 test('planner that returns null stops the run with planner-unavailable', async () => {
   const { result } = await run({}, { ...quiet, planner: () => null })
   assert.equal(result.reason, 'planner-unavailable')
+})
+
+test('planner-unavailable names the agent type it tried, and agentPrefix only when that set it', async () => {
+  const fails = { ...quiet, planner: () => { throw new Error('no such agent') } }
+  const byPrefix = await run({ agentPrefix: 'mine:' }, fails)
+  assert.ok(byPrefix.logs.some(l => l.includes('Check that agent type "mine:planner" resolves') &&
+    l.includes('agentPrefix')), byPrefix.logs.join('\n'))
+
+  const byOverride = await run({ agents: { planner: 'team:scoper' } }, fails)
+  const line = byOverride.logs.find(l => l.includes('No lens ran'))
+  assert.ok(line.includes('Check that agent type "team:scoper" resolves'), line)
+  assert.doesNotMatch(line, /agentPrefix|prefix/)
 })
 
 test('empty plan stops the run', async () => {
@@ -407,12 +425,12 @@ test('requested lenses and modules that do not pair up are reported as gaps', as
     'Requested lenses that apply to none of the selected modules, so never run:', 'unpaired lenses'), ['compose'])
 })
 
-test('a pairs run does not repeat lens scoping gaps the earlier run reported', async () => {
+test('a pairs run reports the plan facts itself, since the run it continues may have reported none', async () => {
   const plan = makePlan()
   plan.lenses.push({ id: 'typo', title: 'Typo', focus: 't', appliesTo: ['cor'] })
   const { result } = await run({ plan, pairs: ['security @ core'] }, quiet)
-  assert.deepEqual(result.coverage.unscopedLenses, [])
-  assert.deepEqual(result.coverage.unknownAppliesTo, [])
+  assert.deepEqual(result.coverage.unscopedLenses, ['typo'])
+  assert.deepEqual(result.coverage.unknownAppliesTo, ['typo: cor'])
 })
 
 test('modules and lenses the plan filters reject are named with the reason', async () => {
@@ -689,6 +707,58 @@ test('a reviewer that is blocked or throws is reported as a coverage gap', async
   assert.deepEqual(result.coverage.blockedPairs.sort(), ['security @ app', 'security @ core'])
 })
 
+test('why a pair was blocked or a finding went unverified reaches the result and the reporter', async () => {
+  const { result, of, logs } = await run({ modules: ['core', 'app', 'ui'], lenses: ['security'] }, {
+    ...quiet,
+    reviewer: (prompt, opts) => {
+      if (opts.label === 'security @ core') throw new Error('agent type "x:reviewer" not found')
+      if (opts.label === 'security @ app') return null
+      return { findings: [finding('A', 'high', { file: 'ui/A.kt' }), finding('B', 'high', { file: 'ui/B.kt' })] }
+    },
+    verifier: prompt => {
+      if (prompt.includes('ui/A.kt')) throw new Error('model "bad" is not available')
+      return null
+    },
+  })
+  assert.deepEqual(result.coverage.blockedPairs, ['security @ core', 'security @ app'])
+  assert.deepEqual(result.coverage.failureCauses, [
+    { cause: 'agent type "x:reviewer" not found', pairs: ['security @ core'] },
+    { cause: 'no answer: skipped by the user, or died on an API error after retries', pairs: ['security @ app'] },
+    { cause: 'model "bad" is not available', findings: ['ui/A.kt:10'] },
+    { cause: 'no answer: skipped by the user, or died on an API error after retries', findings: ['ui/B.kt:10'] },
+  ])
+  assert.deepEqual(result.unverified.map(f => [f.file, f.verifyError]), [
+    ['ui/A.kt', 'model "bad" is not available'],
+    ['ui/B.kt', 'no answer: skipped by the user, or died on an API error after retries'],
+  ])
+  assert.ok(logs.some(l => l.includes('agent type "x:reviewer" not found') && l.includes('security @ core')))
+  assert.deepEqual(fencedList(of('reporter')[0].prompt,
+    'Why pairs were blocked or findings went unverified, one cause per line with what it hit:',
+    'failure causes'), [
+    'agent type "x:reviewer" not found -> pairs: security @ core',
+    'no answer: skipped by the user, or died on an API error after retries -> pairs: security @ app',
+    'model "bad" is not available -> findings: ui/A.kt:10',
+    'no answer: skipped by the user, or died on an API error after retries -> findings: ui/B.kt:10',
+  ])
+})
+
+test('one cause shared by many pairs is grouped and logged once', async () => {
+  const { result, logs } = await run({ modules: ['core', 'app'], lenses: ['security'] }, {
+    ...quiet,
+    reviewer: () => { throw new Error('effort "max" is not supported\nby this model') },
+  })
+  assert.deepEqual(result.coverage.failureCauses, [
+    { cause: 'effort "max" is not supported\\u000aby this model', pairs: ['security @ core', 'security @ app'] },
+  ])
+  assert.equal(logs.filter(l => l.includes('effort "max" is not supported')).length, 1)
+})
+
+test('a run with no failures reports no causes', async () => {
+  const { result, of } = await run({ maxJobs: 2 }, findsOneConfirmed)
+  assert.deepEqual(result.coverage.failureCauses, [])
+  assert.equal(fencedList(of('reporter')[0].prompt, '', 'failure causes'), null)
+})
+
 test('a reviewer reply with no findings list is a failed pair, not a clean one', async () => {
   for (const reply of [{}, { findings: 'none' }, { findings: null }]) {
     const { result } = await run({ modules: ['core'], lenses: ['security'] }, { ...quiet, reviewer: () => reply })
@@ -864,6 +934,22 @@ test('a changed module that no lens applies to reports its changed files as neve
   assert.deepEqual(fencedList(of('reporter')[0].prompt,
     'Changed files that only those modules hold, so never reviewed:', 'unpaired changed files'),
   ['app/B.kt', 'app/shared/D.kt'])
+})
+
+test('an incremental pairs run still names changed files only an unpaired module holds', async () => {
+  const plan = makePlan({
+    modules: [{ name: 'core', paths: ['core/'] }, { name: 'app', paths: ['app/'] }],
+    lenses: [{ id: 'security', title: 'Security', focus: 's', appliesTo: ['core'] }],
+  })
+  const { result, of } = await run(
+    { ...incremental(['core/A.kt', 'app/B.kt']), plan, pairs: ['security @ core'] },
+    quiet,
+  )
+  assert.deepEqual(reviewedModules(of), ['core'])
+  assert.deepEqual(result.coverage.unpairedModules, ['app'])
+  assert.deepEqual(result.coverage.unpairedChanged, ['app/B.kt'])
+  assert.deepEqual(fencedList(of('reporter')[0].prompt,
+    'Changed files that only those modules hold, so never reviewed:', 'unpaired changed files'), ['app/B.kt'])
 })
 
 test('a planner lens scoped only to an unchanged module is not a gap', async () => {
@@ -1130,6 +1216,46 @@ test('the relaunch after a confirmation stop reuses the plan and runs what was c
   assert.deepEqual(capped.result.coverage.cappedPairs, stop.wouldSkip)
   const picked = await run({ today: '2026-10-10', plan: stop.plan, pairs: stop.wouldSkip }, handlers)
   assert.deepEqual(picked.of('reviewer').map(c => c.opts.label), stop.wouldSkip)
+})
+
+test('a pairs relaunch after a confirmation stop reports plan facts and the pairs it left out', async () => {
+  const plan = widePlan()
+  plan.lenses.push(
+    { id: 'typo', title: 'Typo', focus: 't', appliesTo: ['cor'] },
+    { id: 'partial', title: 'Partial', focus: 'p', appliesTo: ['core', 'uii'] },
+  )
+  const handlers = { ...quiet, planner: () => plan }
+  const stop = (await run({ today: '2026-10-21' }, handlers)).result
+  assert.equal(stop.reason, 'needs-confirmation')
+
+  const picked = await run({ today: '2026-10-21', plan: stop.plan, pairs: stop.wouldSkip }, handlers)
+  const c = picked.result.coverage
+  assert.deepEqual(picked.of('reviewer').map(r => r.opts.label), stop.wouldSkip)
+  assert.deepEqual(c.unscopedLenses, ['typo'])
+  assert.deepEqual(c.unknownAppliesTo, ['typo: cor', 'partial: uii'])
+  assert.deepEqual(c.unselectedPairs, stop.wouldRun)
+  assert.deepEqual(c.cappedPairs, [], 'left out by choice, not by the cap')
+  const prompt = picked.of('reporter')[0].prompt
+  assert.deepEqual(fencedList(prompt, 'Planner lenses whose appliesTo names no planned module, so their ' +
+    'focus was never reviewed:', 'unscoped lenses'), ['typo'])
+  assert.deepEqual(fencedList(prompt, 'appliesTo names that match no planned module, so those lens x ' +
+    'module pairs were never reviewed:', 'unknown appliesTo'), ['typo: cor', 'partial: uii'])
+  assert.deepEqual(fencedList(prompt, 'Applicable pairs not selected in this run, so not reviewed here:',
+    'unselected pairs'), stop.wouldRun)
+  assert.match(prompt, /4 selected of 16 applicable/)
+  assert.doesNotMatch(prompt, /run being continued/)
+
+  // A continuation carries the earlier run's findings, so its left-out pairs
+  // may well have been reviewed there.
+  const carry = [{ ...finding('Old', 'high'), lens: 'security', verifierNote: 'holds' }]
+  const next = await run({ plan: stop.plan, pairs: stop.wouldSkip, carry }, handlers)
+  assert.match(next.of('reporter')[0].prompt, /may be covered by the run being continued/)
+})
+
+test('a run without pairs leaves no pair unselected', async () => {
+  const { result, of } = await run({ maxJobs: 2 }, quiet)
+  assert.deepEqual(result.coverage.unselectedPairs, [])
+  assert.equal(fencedList(of('reporter')[0].prompt, '', 'unselected pairs'), null)
 })
 
 test('an explicit maxJobs or a token budget never stops to ask', async () => {
@@ -1425,20 +1551,32 @@ test('defect graders pass only on a confirmed finding, not on any mention of the
   }
 })
 
-test('workflow-completed passes only on a workflow result that wrote the report', () => {
+test('workflow-completed passes only on a workflow result that wrote the report', async () => {
   const pattern = graderPattern('workflow-completed')
-  const result = over => JSON.stringify({ ok: true, mode: 'full', report: 'review-report.md', counts: {}, ...over })
+  // The result run() really returns, so a change to its shape reaches the
+  // grader here rather than at the manual pre-release gate.
+  const real = (await run({ out: 'review-report.md' }, findsOneConfirmed)).result
+  assert.equal(real.report, 'review-report.md')
+  const result = over => JSON.stringify({ ...real, ...over })
   // The trace is JSON per message, and the notification nests the result in a
   // string, so quotes arrive escaped once or more. Every depth must match.
   const notification = r => '<task-notification><result>' + r + '</result></task-notification>'
   const once = JSON.stringify({ role: 'user', content: notification(result()) })
   const twice = JSON.stringify({ message: JSON.stringify({ content: notification(result()) }) })
-  for (const trace of [result(), once, twice, JSON.stringify(JSON.parse(result()), null, 2)]) {
+  for (const trace of [result(), once, twice, JSON.stringify(real, null, 2)]) {
     assert.match(trace, pattern)
   }
+  // The three keys may come in any order, as long as they come before the
+  // first nested value.
+  const { ok, mode, report, ...rest } = real
+  assert.match(JSON.stringify({ report, mode, ok, ...rest }), pattern)
+  assert.match(JSON.stringify({ mode, report, ok, ...rest }, null, 2), pattern)
   // A run that stopped, or whose reporter failed, does not pass.
   assert.doesNotMatch(JSON.stringify({ content: notification(result({ ok: false })) }), pattern)
   assert.doesNotMatch(JSON.stringify({ content: notification(result({ report: null })) }), pattern)
+  assert.doesNotMatch(JSON.stringify({ content: notification(result({ mode: 'verify-only' })) }), pattern)
+  // ok, mode and report must sit in one object, not be spread across several.
+  assert.doesNotMatch(JSON.stringify({ a: { ok: true }, b: { mode: 'full', report: 'review-report.md' } }), pattern)
   // Nor does the Workflow call alone, which workflow-used already counts.
   const call = JSON.stringify({ type: 'tool_use', name: 'Workflow', input: { name: 'review-kit:review', args: { today: '2026-09-24', out: 'review-report.md' } } })
   assert.doesNotMatch(call, pattern)

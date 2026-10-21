@@ -272,6 +272,15 @@ lens applies to, a requested lens that applies to none of the selected modules, 
 an incremental run, the changed files that only such modules hold. Each agent also has a
 `maxTurns` cap; one that hits it without an answer is counted as blocked.
 
+A `pairs` run reports all of these facts itself, because the run it continues may have
+stopped at `needs-confirmation`, which writes no report. It also lists the applicable
+pairs it left out (`coverage.unselectedPairs`), apart from the capped ones; when it carries
+an earlier run's findings, the report says those pairs may be covered by that run.
+Every blocked pair and every finding whose verifier failed keeps its cause, and
+`coverage.failureCauses` groups them, one entry per distinct cause with the pairs or
+findings it hit. A bad `agents`, `model` or `effort` override therefore says what went
+wrong instead of blocking every pair without a word.
+
 Verification is counted the same way. A verdict that neither confirms nor refutes a
 finding reports it as unverified (`verifier-inconclusive`), not as checked. A finding the
 verifier re-graded keeps the reviewer's grade as `claimedSeverity` next to the verified
