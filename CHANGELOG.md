@@ -1,5 +1,27 @@
 # Changelog
 
+## token-audit 0.2.0
+
+- A transcript that cannot be read (deleted between listing and reading, locked, no
+  permission) no longer aborts `rank` with a stack trace: that session is skipped and
+  named with its error code. `session` and `categories` report it as
+  `cannot read <file>: <code>` and exit 2.
+- Skipped sessions get one summary warning instead of one each, and text output names the
+  first five and counts the rest. `--json` still lists every one.
+- `--project` also takes a project's working directory, mapped to its transcripts folder
+  under `<config>/projects/`, with a warning naming the folder used. `--help` says so.
+- `session` prints `output share of cost-eq (main session)`, under the weights in use, and
+  the skill's output rule reads that figure instead of doing its own arithmetic over
+  figures that mixed main and subagent tokens.
+- A prompt longer than the 110-character snippet now ends in `...`, in text and in
+  `--json` (`prompts[].text`); the JSON shape is unchanged.
+- Titles, prompts and commands are cut at grapheme boundaries and to their width in UTF-8
+  bytes too, so CJK or emoji text keeps output within 4 KB and never leaves half a
+  character.
+- `--weights` rejects empty parts (`1,,0.1,5` used to read as a weight of 0).
+- Checked against Claude Code 2.1.306 transcripts; the newer-version warning now starts
+  after 2.1.306.
+
 ## token-meter 0.2.0
 
 - Hiding the band is kept until `/token-meter show`: through `/clear`, `/resume` and

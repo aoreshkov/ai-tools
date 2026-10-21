@@ -20,11 +20,12 @@ deleted, so the ranking covers only what is still on disk.
 | total | Input + cache write + cache read + output tokens, from the API's usage data. Exact, not estimated. |
 | context | Input + cache write + cache read of one call: what the model read to make it. |
 | cost-eq | Tokens weighted by relative price: input 1, cache write 1.25, cache read 0.1, output 5 by default (`--weights` changes them). For comparing sessions, not dollars. |
+| output share of cost-eq (main session) | Output tokens x the output weight, over the cost-eq of the main transcript, subagents left out on both sides. Follows `--weights`. |
 | sub | Share of a session's tokens spent in subagents (their transcripts plus sidechain records). |
 | round-trip tokens | An action's share of the call that issued it. A call that issued three tool uses gives each a third; a call with none is `(reply / thinking)`. |
 | ~result | Estimated size of the tool result: characters / 3.5, plus 1,600 per image. |
 | ~carry | ~result x the number of later calls in the same context segment. A compaction ends the segment. It approximates how often a result was re-read. |
-| prompt tokens | Total of the calls between one user prompt and the next. |
+| prompt tokens | Total of the calls between one user prompt and the next. Prompts show as 110-character snippets; one ending in `...` was cut. |
 | parallel | Calls that issued more than one tool use. |
 | compactions | Context compactions (`/compact` or automatic) in the session. |
 
@@ -42,6 +43,14 @@ From the tool name, and for shell commands from the leading command after `cd`,
 | subagent | Agent, Workflow |
 | reply | Calls with no tool use |
 | other | Everything else, including MCP tools and scripts (`python`, `node`) |
+
+## Locating a project
+
+`rank` takes the working directory's project by default. `--project` names another: its
+transcripts folder, `<config>/projects/<name>`, or its working directory, which is mapped to
+that folder (the warning says which folder was used). A transcript that cannot be read is
+skipped and named, with its error code; text output names the first five and counts the
+rest, and `--json` lists them all.
 
 ## Limits
 

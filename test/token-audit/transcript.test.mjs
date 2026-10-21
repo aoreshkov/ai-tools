@@ -69,11 +69,14 @@ test('a transcript with assistant records but no usage yields no usable call', (
   assert.equal(p.calls.filter(c => c.usage).length, 0)
 })
 
-test('prompts are cut to 110 characters, whitespace collapsed', () => {
+test('prompts keep one character past the 110-character snippet, whitespace collapsed', () => {
+  // The extra character is how the formatter knows the prompt was cut and marks it.
   const long = JSON.stringify({ type: 'user', message: { content: `a\n\n${'b'.repeat(300)}` } })
   const p = parseTranscript([long])
-  assert.equal(p.turns[0].text.length, 110)
+  assert.equal(p.turns[0].text.length, 111)
   assert.ok(p.turns[0].text.startsWith('a b'))
+  const exact = parseTranscript([JSON.stringify({ type: 'user', message: { content: 'c'.repeat(110) } })])
+  assert.equal(exact.turns[0].text.length, 110)
 })
 
 test('tolerates missing fields and unknown record types', () => {
