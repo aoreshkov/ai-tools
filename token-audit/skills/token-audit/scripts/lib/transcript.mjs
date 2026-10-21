@@ -6,8 +6,10 @@
 
 // Newest Claude Code version whose transcripts this parser was checked against. Bump it
 // after checking a newer release's transcripts.
-export const TESTED_MAX_VERSION = '2.1.296'
+export const TESTED_MAX_VERSION = '2.1.306'
 
+// The formatter's prompt width. One character more is kept, so it can tell a prompt that
+// was cut from one that fits and mark the cut.
 const PROMPT_SNIPPET = 110
 
 // Returns { calls, toolUses, turns, sidechain, stats }.
@@ -120,7 +122,7 @@ function readUser(o, { calls, toolUses, turns, segment, turn }) {
   if (o.isMeta || o.isCompactSummary) return turn
   const text = promptText(content)
   if (text == null) return turn
-  const next = { text: text.slice(0, PROMPT_SNIPPET), ts: typeof o.timestamp === 'string' ? o.timestamp : null }
+  const next = { text: text.slice(0, PROMPT_SNIPPET + 1), ts: typeof o.timestamp === 'string' ? o.timestamp : null }
   turns.push(next)
   return next
 }

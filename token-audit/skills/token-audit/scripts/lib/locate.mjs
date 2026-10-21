@@ -58,7 +58,7 @@ export function projectForCwd(config, cwd) {
     const match = subdirs(root).filter(d => path.basename(d).startsWith(prefix))
     if (match.length === 1) return { dir: match[0] }
   }
-  return { dir, warning: `no transcripts folder for ${cwd} (looked for ${dir}); pass --project or --session` }
+  return { dir, warning: `no transcripts folder for ${cwd} (looked for ${dir}); pass --session <id>, or --project with the project's working directory or its folder under ${root}` }
 }
 
 export function listSessions(projectDir) {

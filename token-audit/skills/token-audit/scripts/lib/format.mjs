@@ -1,10 +1,17 @@
-// Text tables and JSON. Text is ASCII only, so it reads the same in every terminal and
-// shell, and stays short: its output lands in a model's context.
+// Text tables and JSON. The text output's own structure is ASCII, so it reads the same in
+// every terminal and shell, and it stays short: it lands in a model's context. Text from
+// the transcripts (titles, prompts, commands) is clipped at grapheme boundaries and to a
+// width in UTF-8 bytes as well as in characters, so multibyte text cannot outgrow the
+// budget or leave a broken character behind.
+
+import { costEq } from './attribute.mjs'
 
 export const FORMAT = 'token-audit/1'
 export const COMMAND_WIDTH = 90
 export const PROMPT_WIDTH = 110
 const TITLE_WIDTH = 40
+// Text output names this many skipped sessions; --json lists them all.
+const SKIPPED_SHOWN = 5
 
 export function tok(n) {
   const a = Math.abs(n)
@@ -15,9 +22,19 @@ export function tok(n) {
 }
 const pct = x => `${(100 * x).toFixed(x > 0 && x < 0.1 ? 1 : 0)}%`
 const share = (part, whole) => (whole ? part / whole : 0)
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+const fits = (t, n) => t.length <= n && Buffer.byteLength(t) <= n
+// Whitespace collapsed, then at most n characters and n UTF-8 bytes, `...` included when
+// cut. The cut falls between graphemes, so an emoji or an accented letter stays whole.
 export const clip = (s, n) => {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
-  return t.length > n ? `${t.slice(0, n - 3)}...` : t
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim().toWellFormed()
+  if (fits(t, n)) return t
+  let kept = ''
+  for (const { segment } of graphemes.segment(t)) {
+    if (!fits(kept + segment, n - 3)) break
+    kept += segment
+  }
+  return `${kept}...`
 }
 const when = ts => (ts ? ts.slice(0, 16).replace('T', ' ') : '-')
 const shortWhen = ts => (ts ? ts.slice(5, 16).replace('T', ' ') : '-')
@@ -86,7 +103,10 @@ export function rankText(d) {
   out.push(`Token use by session - project ${d.project}`)
   out.push(`${d.sessions.length} sessions, ${tok(d.grand.total)} tokens (subagents ${tok(d.grand.sub)}), cost-eq ${tok(d.grand.costEq)}; top 3 = ${pct(topShare)} of tokens`)
   out.push(weightsLine(d.weights))
-  if (d.skipped.length) out.push(`skipped ${d.skipped.length} unreadable session(s): ${d.skipped.map(s => shortId(s.id)).join(', ')}`)
+  if (d.skipped.length) {
+    const more = d.skipped.length > SKIPPED_SHOWN ? ` and ${d.skipped.length - SKIPPED_SHOWN} more` : ''
+    out.push(`skipped ${d.skipped.length} unreadable session(s): ${d.skipped.slice(0, SKIPPED_SHOWN).map(s => shortId(s.id)).join(', ')}${more}`)
+  }
   out.push('')
   const rows = d.sessions.slice(0, d.top).map(s => [
     `${s.rank}${s.current ? '*' : ''}`, shortId(s.id), when(s.first), tok(s.totals.all.total), tok(s.totals.costEq),
@@ -145,7 +165,10 @@ export function sessionText(d) {
   const version = d.versions.length ? ` - Claude Code ${d.versions[d.versions.length - 1]}` : ''
   out.push(`Session ${shortId(d.id)} "${clip(d.title, 60)}" - ${when(d.first)} -> ${when(d.last)} UTC${version}`)
   out.push(`${m.calls} calls, ${tok(m.total)} tokens: input ${tok(m.in)}, cache write ${tok(m.cw)}, cache read ${tok(m.cr)} (${pct(share(m.cr, m.total))}), output ${tok(m.out)}`)
-  out.push(`cost-eq ${tok(t.costEq)} incl. subagents; ${weightsLine(d.weights).replace('cost-eq = ', '')}`)
+  // The figure the skill's output rule reads: output's part of the main session's cost-eq,
+  // under the weights in use. Main transcript only, like the output count above.
+  const outShare = share(d.weights.out * m.out, costEq(m, d.weights))
+  out.push(`cost-eq ${tok(t.costEq)} incl. subagents; output share of cost-eq (main session) ${pct(outShare)}; ${weightsLine(d.weights).replace('cost-eq = ', '')}`)
   out.push(`context: peak ${tok(a.context.peak)}, avg ${tok(a.context.avg)}, at 0/25/50/75/100% of calls ${a.context.profile.map(tok).join(' / ')}; compactions ${a.context.compactions}`)
   out.push(`parallel: ${a.parallelCalls} of ${m.calls} calls issued >1 tool use; subagents: ${t.subagentTranscripts} transcript(s), ${t.sub.calls} calls, ${tok(t.sub.total)} tokens`)
 

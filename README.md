@@ -421,9 +421,13 @@ The script also runs on its own:
 
 ```bash
 node token-audit/skills/token-audit/scripts/audit.mjs rank --top 10
+node token-audit/skills/token-audit/scripts/audit.mjs rank --project ~/work/other-repo
 node token-audit/skills/token-audit/scripts/audit.mjs session <id> --json
 node token-audit/skills/token-audit/scripts/audit.mjs --help
 ```
+
+`--project` takes a project's working directory or its transcripts folder under
+`<config>/projects/`.
 
 ## token-meter
 

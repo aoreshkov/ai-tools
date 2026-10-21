@@ -13,6 +13,7 @@ import { DEFAULT_WEIGHTS, analyzeSession, sessionTotals } from './lib/attribute.
 import {
   AuditError, configDir, findSession, listSessions, projectForCwd, readLines, sessionFromPath, subagentFiles,
 } from './lib/locate.mjs'
+// Paths are only joined and compared here; locate.mjs does all disk access.
 import { categoriesJson, categoriesText, rankJson, rankText, sessionJson, sessionText } from './lib/format.mjs'
 
 const USAGE = `Usage:
@@ -20,6 +21,8 @@ const USAGE = `Usage:
   node audit.mjs session    <id | id-prefix | path.jsonl> [--top N] [--json]
   node audit.mjs categories <id | id-prefix | path.jsonl> [--json]
 Common options:
+  --project <transcripts-dir | working-dir>
+                              <config>/projects/<name>, or a working directory, mapped to it
   --config-dir <dir>          Claude config dir (default: $CLAUDE_CONFIG_DIR, else ~/.claude)
   --weights in,cw,cr,out      relative cost weights (default 1,1.25,0.1,5)
   --include-subagents <bool>  add subagent transcripts to their session (default true)
@@ -28,7 +31,8 @@ Figures come from Claude Code's internal transcript format and are estimates.`
 
 const DEFAULT_TOP = { rank: 5, actions: 8, results: 5, prompts: 5 }
 
-export function run(argv, { env = process.env, cwd = process.cwd() } = {}) {
+// `read` is how a transcript's lines are read; tests pass one that fails.
+export function run(argv, { env = process.env, cwd = process.cwd(), read = readLines } = {}) {
   const stdout = []
   const stderr = []
   let exitZero = argv.includes('--exit-zero')
@@ -39,7 +43,7 @@ export function run(argv, { env = process.env, cwd = process.cwd() } = {}) {
       stdout.push(USAGE)
       return { code: 0, stdout: stdout.join('\n'), stderr: '' }
     }
-    const ctx = { ...opts, config: configDir(opts.configDir, env), cwd, warnings: [], versions: new Set(), bad: 0, noUsage: 0 }
+    const ctx = { ...opts, config: configDir(opts.configDir, env), cwd, read, warnings: [], versions: new Set(), bad: 0, noUsage: 0 }
     const result = COMMANDS[opts.command](ctx)
     stdout.push(result)
     stderr.push(...finishWarnings(ctx).map(w => `token-audit: warning: ${w}`))
@@ -92,8 +96,10 @@ function parseOptions(argv) {
   }
   let weights = DEFAULT_WEIGHTS
   if (v.weights != null) {
-    const w = v.weights.split(',').map(s => Number(s.trim()))
-    if (w.length !== 4 || w.some(x => !Number.isFinite(x) || x < 0)) {
+    // Number('') is 0, so an empty part is rejected before it is converted.
+    const parts = v.weights.split(',').map(s => s.trim())
+    const w = parts.map(Number)
+    if (parts.length !== 4 || parts.some(s => s === '') || w.some(x => !Number.isFinite(x) || x < 0)) {
       throw new AuditError(`--weights takes four non-negative numbers in,cw,cr,out, got ${v.weights}`, 1)
     }
     weights = { in: w[0], cw: w[1], cr: w[2], out: w[3] }
@@ -110,7 +116,7 @@ function parseOptions(argv) {
 // ---------------------------------------------------------------------------------------
 
 function load(ctx, file, options) {
-  const parsed = parseTranscript(readLines(file), options)
+  const parsed = parseTranscript(ctx.read(file), options)
   for (const v of parsed.stats.versions) ctx.versions.add(v)
   ctx.bad += parsed.stats.badLines
   ctx.noUsage += parsed.stats.noUsage
@@ -128,6 +134,41 @@ function loadSession(ctx, s) {
   return { parsed, subagents }
 }
 
+// A file deleted, locked or unreadable between listing and reading: the system error's
+// code (ENOENT, EACCES, EISDIR, EPERM, EBUSY, ...). Node's own ERR_* codes are bugs here.
+const fileError = e => !(e instanceof AuditError) && typeof e?.code === 'string' && /^E[A-Z]+$/.test(e.code)
+
+const SKIPPED_IDS = 5
+const NO_USAGE = 'assistant records without usable usage data'
+
+// One warning for every skipped session, however many there are.
+function skippedWarning(skipped) {
+  const byReason = new Map()
+  for (const s of skipped) byReason.set(s.reason, (byReason.get(s.reason) || 0) + 1)
+  const reasons = [...byReason].map(([reason, n]) => `${n} ${reason}`).join(', ')
+  const ids = skipped.slice(0, SKIPPED_IDS).map(s => s.id).join(', ')
+  const more = skipped.length > SKIPPED_IDS ? ` and ${skipped.length - SKIPPED_IDS} more` : ''
+  const format = byReason.has(NO_USAGE) ? '; the transcript format may have changed' : ''
+  return `skipped ${skipped.length} session(s) [${reasons}]: ${ids}${more}${format}`
+}
+
+const isUnder = (dir, root) => {
+  const rel = path.relative(root, dir)
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+// --project names a transcripts folder, <config>/projects/<name>. A working directory is
+// taken too: a folder outside <config>/projects with no transcripts of its own is mapped
+// to the transcripts folder Claude Code keeps for it, and the warning says which.
+function projectDirFor(ctx) {
+  const dir = path.resolve(ctx.cwd, ctx.project)
+  if (listSessions(dir).length || isUnder(dir, path.join(ctx.config, 'projects'))) return dir
+  const p = projectForCwd(ctx.config, dir)
+  if (p.warning) return dir
+  ctx.warnings.push(`--project ${dir} holds no transcripts; using its transcripts folder ${p.dir}`)
+  return p.dir
+}
+
 function finishWarnings(ctx) {
   const w = [...ctx.warnings]
   const newest = [...ctx.versions].sort(compareVersions).pop()
@@ -142,7 +183,7 @@ function finishWarnings(ctx) {
 function resolveTarget(ctx) {
   const t = ctx.target
   if (t.endsWith('.jsonl') || t.includes('/') || t.includes('\\')) return sessionFromPath(path.resolve(ctx.cwd, t))
-  const projectDir = ctx.project ? path.resolve(ctx.cwd, ctx.project) : projectForCwd(ctx.config, ctx.cwd).dir
+  const projectDir = ctx.project ? projectDirFor(ctx) : projectForCwd(ctx.config, ctx.cwd).dir
   return findSession(ctx.config, t, projectDir)
 }
 
@@ -160,7 +201,7 @@ function rank(ctx) {
       ctx.warnings.push(`no transcript for session ${ctx.session} yet; ranking the working directory's project`)
     }
   }
-  if (!projectDir && ctx.project) projectDir = path.resolve(ctx.cwd, ctx.project)
+  if (!projectDir && ctx.project) projectDir = projectDirFor(ctx)
   if (!projectDir) {
     const p = projectForCwd(ctx.config, ctx.cwd)
     if (p.warning) ctx.warnings.push(p.warning)
@@ -172,16 +213,26 @@ function rank(ctx) {
   const sessions = []
   const skipped = []
   for (const s of files) {
-    const { parsed, subagents } = loadSession(ctx, { ...s, projectDir })
+    // Files are listed first and read later, so one can go between the two. Reading is
+    // the check: a failed read skips that session, not the whole ranking.
+    let loaded
+    try {
+      loaded = loadSession(ctx, { ...s, projectDir })
+    } catch (e) {
+      if (!fileError(e)) throw e
+      skipped.push({ id: s.id, reason: e.code })
+      continue
+    }
+    const { parsed, subagents } = loaded
     if (unreadable(parsed)) {
-      skipped.push({ id: s.id, reason: 'assistant records without usable usage data' })
-      ctx.warnings.push(`session ${s.id}: ${parsed.stats.assistantRecords} assistant records but no usable usage data; transcript format may have changed`)
+      skipped.push({ id: s.id, reason: NO_USAGE })
       continue
     }
     const totals = sessionTotals(parsed, subagents, ctx.weights)
     if (!totals.all.calls) continue
     sessions.push({ id: s.id, title: parsed.stats.title, first: parsed.stats.first, last: parsed.stats.last, totals, current: s.id === currentId })
   }
+  if (skipped.length) ctx.warnings.push(skippedWarning(skipped))
   if (!sessions.length) throw new AuditError(`no session in ${projectDir} has usable token data`, 2)
   sessions.sort((a, b) => b.totals.all.total - a.totals.all.total || a.id.localeCompare(b.id))
   sessions.forEach((s, i) => { s.rank = i + 1 })
@@ -201,7 +252,14 @@ function rank(ctx) {
 
 function sessionData(ctx) {
   const s = resolveTarget(ctx)
-  const { parsed, subagents } = loadSession(ctx, s)
+  let loaded
+  try {
+    loaded = loadSession(ctx, s)
+  } catch (e) {
+    if (!fileError(e)) throw e
+    throw new AuditError(`cannot read ${e.path ?? s.file}: ${e.code}`, 2)
+  }
+  const { parsed, subagents } = loaded
   if (unreadable(parsed)) {
     throw new AuditError(`session ${s.id} has ${parsed.stats.assistantRecords} assistant records but no usable usage data; the transcript format may have changed`, 2)
   }
