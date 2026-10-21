@@ -27,8 +27,11 @@ export const bar = (pct: number, width = 10): string => {
   return '█'.repeat(filled) + '░'.repeat(width - filled)
 }
 
-export const tokens = (n: number): string =>
-  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`
+// Rounded before the unit is picked, so 999,500 reads 1.0M and never 1000k.
+export const tokens = (n: number): string => {
+  const k = Math.round(n / 1000)
+  return k >= 1000 ? `${(n / 1_000_000).toFixed(1)}M` : `${k}k`
+}
 
 const base = (path: string): string => path.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? path
 

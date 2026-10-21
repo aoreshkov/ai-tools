@@ -443,7 +443,9 @@ ai-tools ⎇ main  Opus 5.5 high  ctx ░░░░░░░░░░ 5% 48k/1.0M
 
 While context or a limit is at 90% or more, an alert line also shows under the prompt,
 such as `⚠ token-meter: context 92%`, and it clears when the figure drops. The `hide`
-button or `/token-meter hide` hides the band; `/token-meter show` brings it back.
+button or `/token-meter hide` hides the band; `/token-meter show` brings it back. Hiding
+is kept until you show the band again: through `/clear`, `/resume` and `/branch`, and in
+later sessions.
 
 It sits beside a custom [status line](https://code.claude.com/docs/en/statusline), not in
 place of one: your status line still renders, and the alert line sits between it and the
@@ -474,13 +476,16 @@ hooks: session.start, classic.SessionStart{source=clear|resume|fork}, session.me
        turn.step, command.run{command=token-meter}, ui.render{component=AbovePrompt}
 calls: $.clock.every, $.clock.now, $.command.register, $.fs.read, $.session.cwd,
        $.session.model, $.session.repo, $.session.root, $.session.usage, $.state.get,
-       $.state.set, $.ui.invalidate, $.ui.log, $.ui.resolve, $.ui.status
+       $.state.set, $.store.get, $.store.set, $.ui.invalidate, $.ui.log, $.ui.resolve,
+       $.ui.status
 ```
 
 The one file it reads is git's `HEAD`: `$.fs.read` opens `.git/HEAD` in the nearest
 repository folder at or above the working directory, or, in a worktree, the `HEAD` its
-`.git` file points to. Outside a git repository it reads nothing. It writes no files,
-starts no processes (git included), makes no network requests, reads no environment
+`.git` file points to. Outside a git repository it reads nothing. The only thing it keeps
+is whether the band is hidden, under `hidden` in its own `$.store`, which Claude Code holds
+as a JSON file of the plugin's under your Claude configuration directory. It writes no
+other files, starts no processes (git included), makes no network requests, reads no environment
 variables or settings, and calls no model. `turn.step` sees each model request so the band
 can show its effort, and passes every request on unchanged.
 

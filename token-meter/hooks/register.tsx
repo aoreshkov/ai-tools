@@ -46,7 +46,22 @@ const refreshBranch = async ($: EngineInterface): Promise<void> => {
   if ((await read($, branch)) !== name) await update($, branch, () => name)
 }
 
+// Hiding is a preference, so it is kept in $.store as well: that outlives the session,
+// and the $.state reset of /clear, /resume and /branch. /token-meter show undoes it.
+const HIDDEN_KEY = 'hidden'
+
+const setHidden = async ($: EngineInterface, hidden: boolean): Promise<void> => {
+  await update($, isHidden, () => hidden)
+  try {
+    await $.store.set(HIDDEN_KEY, hidden)
+  } catch (error) {
+    $.ui.log(`token-meter: band ${hidden ? 'hidden' : 'shown'} for this session only: ${String(error)}`, { to: 'debug' })
+  }
+}
+
 const reload = async ($: EngineInterface): Promise<void> => {
+  const hidden = (await $.store.get(HIDDEN_KEY).catch(() => undefined)) === true
+  if ((await read($, isHidden)) !== hidden) await update($, isHidden, () => hidden)
   await record($, await $.session.usage())
   await refreshBranch($)
 }
@@ -98,7 +113,7 @@ export const register: Register = on => {
   on('command.run', { command: 'token-meter' }, async ($, e) => {
     const verb = e.args.trim()
     if (verb !== 'show' && verb !== 'hide') return { text: USAGE }
-    await update($, isHidden, () => verb === 'hide')
+    await setHidden($, verb === 'hide')
     return { text: `band ${verb === 'hide' ? 'hidden' : 'shown'}` }
   })
 
@@ -140,7 +155,7 @@ export const register: Register = on => {
           </Text>
         ))}
         {m.usd === null || m.usd === 0 ? [] : [<Text key="usd" dimColor>${m.usd.toFixed(2)}</Text>]}
-        <Button key="hide" label="hide" plain onPress={() => update($, isHidden, () => true)} />
+        <Button key="hide" label="hide" plain onPress={() => setHidden($, true)} />
       </Box>
     )
   })

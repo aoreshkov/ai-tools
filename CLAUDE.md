@@ -94,6 +94,9 @@ claude plugin test ./token-meter
   drawn while the user has a custom `statusLine` (checked on 2.1.296), so don't use it.
 - State the band draws from lives in `$.state`, declared in `types/index.d.ts`; reload it in
   `classic.SessionStart` for `clear`, `resume` and `fork`.
+- A value that must outlive that reset or the session (the user hiding the band) is also
+  written to `$.store` and read back in the reload. The test kit's `$` has no `state` or
+  `store` noun: seed `mock.store`, or hook `store.get`/`store.set` to read what was written.
 - In a `Box` row, an empty string still takes a `columnGap`; leave an item out with `[]`.
 - Type-check locally with TypeScript 5.4+: `npx -p typescript@5 tsc -p token-meter` works once a
   `claude --plugin-dir ./token-meter` session has written its gitignored `tsconfig.json`
