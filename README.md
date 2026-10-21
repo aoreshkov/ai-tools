@@ -593,5 +593,5 @@ anyway.
 
 ## Licence
 
-`review-kit`, `token-audit` and this repository: MIT. `kotlin-lib` and `oracle-forms`: Apache-2.0, in
-their own repositories.
+`review-kit`, `token-audit`, `token-meter` and this repository: MIT. `kotlin-lib` and
+`oracle-forms`: Apache-2.0, in their own repositories.
