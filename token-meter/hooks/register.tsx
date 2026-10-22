@@ -15,6 +15,16 @@ const branch = atom({ plugin: 'token-meter', key: 'branch' } as const, null)
 
 const USAGE = 'Usage: /token-meter [show | hide]'
 
+// A failed read or write is logged instead of thrown. The engine would pass the event on
+// anyway, but the hook would lose the rest of its work: in session.start, the command.
+const guarded = async ($: EngineInterface, what: string, work: () => Promise<void>): Promise<void> => {
+  try {
+    await work()
+  } catch (error) {
+    $.ui.log(`${what} failed: ${String(error)}`, { to: 'debug' })
+  }
+}
+
 const record = async ($: EngineInterface, figures: Figures): Promise<void> => {
   const m = toMeter(figures)
   await update($, meter, () => m)
@@ -41,10 +51,12 @@ const readBranch = async ($: EngineInterface): Promise<string | null> => {
   return null
 }
 
-const refreshBranch = async ($: EngineInterface): Promise<void> => {
-  const name = await readBranch($).catch(() => null)
-  if ((await read($, branch)) !== name) await update($, branch, () => name)
-}
+// Never rejects, so the clock's `void refreshBranch($)` leaves nothing unhandled
+const refreshBranch = ($: EngineInterface): Promise<void> =>
+  guarded($, 'branch refresh', async () => {
+    const name = await readBranch($).catch(() => null)
+    if ((await read($, branch)) !== name) await update($, branch, () => name)
+  })
 
 // Hiding is a preference, so it is kept in $.store as well: that outlives the session,
 // and the $.state reset of /clear, /resume and /branch. /token-meter show undoes it.
@@ -60,26 +72,29 @@ const setHidden = async ($: EngineInterface, hidden: boolean): Promise<void> => 
 }
 
 const reload = async ($: EngineInterface): Promise<void> => {
-  const hidden = (await $.store.get(HIDDEN_KEY).catch(() => undefined)) === true
-  if ((await read($, isHidden)) !== hidden) await update($, isHidden, () => hidden)
-  await record($, await $.session.usage())
+  await guarded($, 'reload', async () => {
+    const hidden = (await $.store.get(HIDDEN_KEY).catch(() => undefined)) === true
+    if ((await read($, isHidden)) !== hidden) await update($, isHidden, () => hidden)
+    await record($, await $.session.usage())
+  })
   await refreshBranch($)
 }
 
 export const register: Register = on => {
+  // The command and the clock come before the reload, so nothing it does can cost them
   on('session.start', async ($, e, next) => {
-    await reload($)
+    try {
+      await $.command.register({ name: 'token-meter', description: 'Show or hide the token meter band', argumentHint: '[show|hide]', immediate: true })
+    } catch (error) {
+      $.ui.log(`/token-meter not registered: ${String(error)}`, { to: 'debug' })
+    }
     // Keeps the reset countdowns current while the session is idle, and picks up a
     // checkout made outside the session
     $.clock.every(60_000, () => {
       void refreshBranch($)
       $.ui.invalidate('ui.render')
     })
-    try {
-      await $.command.register({ name: 'token-meter', description: 'Show or hide the token meter band', argumentHint: '[show|hide]', immediate: true })
-    } catch (error) {
-      $.ui.log(`/token-meter not registered: ${String(error)}`, { to: 'debug' })
-    }
+    await reload($)
     return next(e)
   })
 
@@ -91,7 +106,7 @@ export const register: Register = on => {
 
   // Fires after each response, so a checkout Claude ran shows by the turn's end
   on('session.measure', async ($, e, next) => {
-    await record($, e)
+    await guarded($, 'measurement', () => record($, e))
     await refreshBranch($)
     return next(e)
   })

@@ -211,6 +211,59 @@ describe('hooks', () => {
     expect(logs[0]?.text).toMatch(/^\/token-meter not registered: /)
   })
 
+  test('a failed usage read still leaves /token-meter registered and the idle refresh running, and logs why', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const { reads } = stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.usage', () => { throw new Error('usage unavailable') })
+    const registered: string[] = []
+    on('command.register', ($, e) => {
+      registered.push(e.name)
+      return { value: { command: e.name } }
+    })
+    const logs: { text: string; to: string }[] = []
+    on('ui.log', ($, e) => {
+      logs.push({ text: e.text, to: e.to })
+      return { value: undefined }
+    })
+    on('session.start', () => ({ cwd: 'from the engine' }))
+    mock.store(on)
+
+    expect(await $.session.start({ cwd: 'C:\\work\\ai-tools', surface: 'terminal', isInteractive: true }))
+      .toEqual({ cwd: 'from the engine' })
+    expect(registered).toEqual(['token-meter'])
+    expect(logs.map(l => l.to)).toEqual(['debug'])
+    expect(logs[0]?.text).toMatch(/^reload failed: /)
+
+    // The branch is still read once at the start and again after a minute idle
+    const heads = () => reads.filter(r => r.endsWith('/.git/HEAD')).length
+    const before = heads()
+    expect(before).toBeGreaterThan(0)
+    await clock.advance(60_000)
+    expect(heads()).toBeGreaterThan(before)
+  })
+
+  for (const source of ['clear', 'resume', 'fork'] as const) {
+    test(`a failed usage read after ${source} passes the result on, still reads the branch, and logs why`, async ($, on) => {
+      mock.clock(on, { now: NOW })
+      const { reads } = stubSession(on)
+      on('ui.status', () => ({ value: undefined }))
+      on('session.usage', () => { throw new Error('usage unavailable') })
+      on('classic.SessionStart', () => ({ additionalContext: ['from the engine'] }))
+      const logs: string[] = []
+      on('ui.log', ($, e) => {
+        logs.push(e.text)
+        return { value: undefined }
+      })
+      mock.store(on)
+
+      expect(await $.classic.SessionStart({ source })).toEqual({ additionalContext: ['from the engine'] })
+      expect(reads.some(r => r.endsWith('/.git/HEAD'))).toBe(true)
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toMatch(/^reload failed: /)
+    })
+  }
+
   test('the context figure takes its level\'s colour, and the band shows tokens over the window', async ($, on) => {
     mock.clock(on, { now: NOW })
     stubSession(on)
@@ -372,22 +425,30 @@ describe('hooks', () => {
     expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
   })
 
-  test('the figures come back after /clear, /resume and /branch, and the hook passes the result on', async ($, on) => {
-    mock.clock(on, { now: NOW })
-    stubSession(on)
-    on('ui.status', () => ({ value: undefined }))
-    on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
-    on('classic.SessionStart', () => ({ additionalContext: ['from the engine'] }))
-    on('ui.render', ENGINE_BAND)
-    mock.store(on)
+  // One test each, so every source starts from an empty $.state, as after the reset
+  for (const source of ['clear', 'resume', 'fork'] as const) {
+    test(`the figures come back after ${source}, and the hook passes the result on`, async ($, on) => {
+      mock.clock(on, { now: NOW })
+      stubSession(on)
+      on('ui.status', () => ({ value: undefined }))
+      on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
+      on('classic.SessionStart', () => ({ additionalContext: ['from the engine'] }))
+      on('ui.render', ENGINE_BAND)
+      mock.store(on)
 
-    for (const source of ['clear', 'resume', 'fork'] as const) {
+      for (const surface of ['terminal', 'desktop'] as const) {
+        const before = await $.ui.mount({ ...BAND, surface })
+        expect(await before.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+        await before.unmount()
+      }
       expect(await $.classic.SessionStart({ source })).toEqual({ additionalContext: ['from the engine'] })
-      const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-      expect(await ui.find({ type: 'Text', text: '██░░░░░░░░ 25%' })).toBeDefined()
-      await ui.unmount()
-    }
-  })
+      for (const surface of ['terminal', 'desktop'] as const) {
+        const ui = await $.ui.mount({ ...BAND, surface })
+        expect(await ui.find({ type: 'Text', text: '██░░░░░░░░ 25%' })).toBeDefined()
+        await ui.unmount()
+      }
+    })
+  }
 
   test('hiding and showing the band is kept in the store, past the session', async ($, on) => {
     mock.clock(on, { now: NOW })

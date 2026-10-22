@@ -1,5 +1,15 @@
 # Changelog
 
+## token-meter 0.2.1
+
+- `/token-meter` and the once-a-minute refresh are set up before the band's figures are
+  loaded, so a failed usage read at startup no longer leaves the session without them.
+- A failed usage read or state write in any hook is logged to the debug log, and the
+  rest of the hook still runs: after `/clear`, `/resume` and `/branch`, the branch is
+  still read. The idle branch refresh can no longer leave an unhandled rejection.
+- Tests: the figures-after-reset check runs once per source on a fresh state, so a source
+  dropped from the filter fails it.
+
 ## token-audit 0.2.1
 
 - Titles, prompts and commands lose terminal escape sequences, other control characters
