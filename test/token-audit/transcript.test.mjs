@@ -69,14 +69,22 @@ test('a transcript with assistant records but no usage yields no usable call', (
   assert.equal(p.calls.filter(c => c.usage).length, 0)
 })
 
-test('prompts keep one character past the 110-character snippet, whitespace collapsed', () => {
-  // The extra character is how the formatter knows the prompt was cut and marks it.
+test('prompts keep the 110-character snippet, whitespace collapsed, and say when they were cut', () => {
   const long = JSON.stringify({ type: 'user', message: { content: `a\n\n${'b'.repeat(300)}` } })
   const p = parseTranscript([long])
-  assert.equal(p.turns[0].text.length, 111)
+  assert.equal(p.turns[0].text.length, 110)
   assert.ok(p.turns[0].text.startsWith('a b'))
+  assert.equal(p.turns[0].cut, true)
   const exact = parseTranscript([JSON.stringify({ type: 'user', message: { content: 'c'.repeat(110) } })])
   assert.equal(exact.turns[0].text.length, 110)
+  assert.equal(exact.turns[0].cut, false)
+})
+
+test('versions of an unknown shape are counted, not kept', () => {
+  const rec = version => JSON.stringify({ type: 'user', version, message: { content: 'hi' } })
+  const p = parseTranscript([rec('2.1.300'), rec('x'.repeat(5000)), rec('2.1.300\n\u001b[2J'), rec('2.1.300-beta.1')])
+  assert.deepEqual(p.stats.versions, ['2.1.300', '2.1.300-beta.1'])
+  assert.equal(p.stats.badVersions, 2)
 })
 
 test('tolerates missing fields and unknown record types', () => {

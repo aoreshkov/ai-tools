@@ -1,5 +1,19 @@
 # Changelog
 
+## token-audit 0.2.1
+
+- Titles, prompts and commands lose terminal escape sequences, other control characters
+  and bidi controls before they are printed, in text and in `--json`. Copied from a
+  transcript, they could recolour or rewrite lines in a terminal, or reorder what a
+  reader sees. Emoji joined with a zero-width joiner stay whole.
+- A cut prompt always ends in `...`. One whose 111th character was a space, or whose text
+  lost a control character, was shown as complete.
+- A record whose `version` is not a version number (unbounded, or with newlines or
+  escapes) is counted in one warning and left out of the version check, instead of being
+  printed in the session header or the newer-than-tested warning.
+- Checked against Claude Code 2.1.308 transcripts (was 2.1.306).
+- The `--json` shape is unchanged.
+
 ## token-audit 0.2.0
 
 - A transcript that cannot be read (deleted between listing and reading, locked, no

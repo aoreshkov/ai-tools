@@ -256,6 +256,85 @@ test('a prompt longer than the snippet is marked as cut', () => {
   }
 })
 
+// A cut that whitespace or a stripped control character shortens back within the width
+// still shows: the marker comes from the parser's cut flag, not from the length.
+test('a cut prompt is marked even when what is left fits the width', () => {
+  const t = tempConfig()
+  try {
+    const proj = path.join(t.dir, 'projects', 'p')
+    fs.mkdirSync(proj, { recursive: true })
+    const prompts = [`${'y'.repeat(PROMPT_WIDTH)} tail`, `\u001b[1m${'z'.repeat(PROMPT_WIDTH)}`]
+    const lines = prompts.flatMap((content, i) => [
+      { type: 'user', message: { content }, timestamp: `2026-09-01T10:0${i}:00Z` },
+      { type: 'assistant', message: { id: `m${i}`, content: [], usage: { input_tokens: 9 - i, output_tokens: 1 } } },
+    ])
+    fs.writeFileSync(path.join(proj, 's.jsonl'), lines.map(l => JSON.stringify(l)).join('\n'))
+    const j = JSON.parse(run(['session', 's', '--project', proj, '--json'], { env: {}, cwd: t.dir }).stdout)
+    assert.deepEqual(j.prompts.map(p => p.text.endsWith('...')), [true, true], JSON.stringify(j.prompts))
+    const text = run(['session', 's', '--project', proj], { env: {}, cwd: t.dir }).stdout
+    assert.match(text, /y+\.\.\.$/m)
+    assert.match(text, /z+\.\.\.$/m)
+  } finally {
+    t.done()
+  }
+})
+
+// Terminal escapes (CSI, OSC 8 links), BEL, the C1 CSI and bidi overrides would recolour,
+// rewrite or reorder what a person running the CLI in a terminal sees.
+const CONTROLS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/u
+const HOSTILE = 'a \u001b[31mred\u001b[0m \u001b]8;;https://example.com/\u0007link\u001b]8;;\u0007 bell\u0007 c1\u009b2J ‮evil'
+
+test('control, escape and bidi characters from transcripts never reach the output', () => {
+  const t = tempConfig()
+  try {
+    const proj = path.join(t.dir, 'projects', 'p')
+    fs.mkdirSync(proj, { recursive: true })
+    const lines = [
+      { type: 'ai-title', aiTitle: `title ${HOSTILE}` },
+      { type: 'user', message: { content: `prompt ${HOSTILE}` }, timestamp: '2026-09-01T10:00:00Z' },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: `echo ${HOSTILE}` } }], usage: { input_tokens: 5, output_tokens: 5 } } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r'.repeat(500) }] } },
+      { type: 'assistant', message: { id: 'm2', content: [], usage: { input_tokens: 1, output_tokens: 1 } } },
+    ]
+    fs.writeFileSync(path.join(proj, 's.jsonl'), lines.map(l => JSON.stringify(l)).join('\n'))
+    for (const cmd of ['rank', 'session', 'categories']) {
+      const args = cmd === 'rank' ? [cmd, '--project', proj] : [cmd, 's', '--project', proj]
+      const out = run(args, { env: {}, cwd: t.dir }).stdout
+      assert.doesNotMatch(out, CONTROLS, `${cmd}: ${JSON.stringify(out)}`)
+      for (const leftover of ['[31m', '8;;', '[0m']) assert.ok(!out.includes(leftover), `${cmd}: ${leftover} left in ${JSON.stringify(out)}`)
+    }
+    const j = JSON.parse(run(['session', 's', '--project', proj, '--json'], { env: {}, cwd: t.dir }).stdout)
+    for (const s of [...j.prompts.map(p => p.text), ...j.results.map(r => r.what)]) {
+      assert.doesNotMatch(s, CONTROLS, JSON.stringify(s))
+    }
+    assert.match(j.prompts[0].text, /^prompt a red link bell c1 evil$/)
+  } finally {
+    t.done()
+  }
+})
+
+test('a version of an unknown shape is counted and never printed', () => {
+  const t = tempConfig()
+  try {
+    const proj = path.join(t.dir, 'projects', 'p')
+    fs.mkdirSync(proj, { recursive: true })
+    const lines = [
+      { type: 'user', version: 'v'.repeat(5000), message: { content: 'hi' }, timestamp: '2026-09-01T10:00:00Z' },
+      { type: 'assistant', version: '2.1.290\n\u001b[2Jfake', message: { id: 'm1', content: [], usage: { input_tokens: 5, output_tokens: 5 } } },
+    ]
+    fs.writeFileSync(path.join(proj, 's.jsonl'), lines.map(l => JSON.stringify(l)).join('\n'))
+    const r = run(['session', 's', '--project', proj], { env: {}, cwd: t.dir })
+    assert.equal(r.code, 0, r.stderr)
+    for (const out of [r.stdout, r.stderr]) {
+      assert.ok(!out.includes('vvvv') && !out.includes('fake'), out)
+      assert.doesNotMatch(out, CONTROLS)
+    }
+    assert.match(r.stderr, /2 record\(s\) with a version of unknown shape; their version was ignored/)
+  } finally {
+    t.done()
+  }
+})
+
 test('--project also takes a working directory, and says which transcripts folder it used', () => {
   const t = tempConfig()
   try {
@@ -392,6 +471,16 @@ test('clip cuts at grapheme boundaries and within its width in UTF-8 bytes', () 
   assert.equal(clip('short', 10), 'short')
   assert.equal(clip('  spaced \n out  ', 20), 'spaced out')
   assert.equal(clip('日本', 6), '日本')
+  // Stripping controls keeps the joiner that holds the family emoji together.
+  assert.equal(clip(WIDE, 200), WIDE)
+  assert.equal(clip('short', 10, true), 'short...')
+})
+
+// CLAUDE.md fixes these widths for the model's context budget. Changing one is deliberate
+// and updates CLAUDE.md too.
+test('the cut widths are 90 for commands and 110 for prompts', () => {
+  assert.equal(COMMAND_WIDTH, 90)
+  assert.equal(PROMPT_WIDTH, 110)
 })
 
 test('hundreds of skipped sessions keep rank within budget, with one warning', () => {
