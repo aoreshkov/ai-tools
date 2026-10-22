@@ -1,9 +1,11 @@
 // Text tables and JSON. The text output's own structure is ASCII, so it reads the same in
 // every terminal and shell, and it stays short: it lands in a model's context. Text from
-// the transcripts (titles, prompts, commands) is clipped at grapheme boundaries and to a
-// width in UTF-8 bytes as well as in characters, so multibyte text cannot outgrow the
-// budget or leave a broken character behind.
+// the transcripts (titles, prompts, commands) is stripped of terminal escapes, control and
+// bidi characters, then clipped at grapheme boundaries and to a width in UTF-8 bytes as
+// well as in characters, so multibyte text cannot outgrow the budget or leave a broken
+// character behind.
 
+import { stripVTControlCharacters } from 'node:util'
 import { costEq } from './attribute.mjs'
 
 export const FORMAT = 'token-audit/1'
@@ -24,11 +26,18 @@ const pct = x => `${(100 * x).toFixed(x > 0 && x < 0.1 ? 1 : 0)}%`
 const share = (part, whole) => (whole ? part / whole : 0)
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 const fits = (t, n) => t.length <= n && Buffer.byteLength(t) <= n
-// Whitespace collapsed, then at most n characters and n UTF-8 bytes, `...` included when
-// cut. The cut falls between graphemes, so an emoji or an accented letter stays whole.
-export const clip = (s, n) => {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim().toWellFormed()
-  if (fits(t, n)) return t
+// Bidi embeddings, overrides, isolates and marks reorder what a reader sees. The zero-width
+// joiner is a format character too, but it holds emoji together, so it stays.
+const BIDI = /[؜‎‏‪-‮⁦-⁩]/g
+// Whole escape sequences go first, so no `[31m` is left behind; other controls become
+// spaces and collapse with the rest of the whitespace. Then at most n characters and n
+// UTF-8 bytes, `...` included when cut, or always when `cut` says the text was already
+// shortened. The cut falls between graphemes, so an emoji or an accented letter stays whole.
+export const clip = (s, n, cut = false) => {
+  const t = stripVTControlCharacters(String(s ?? '')).replace(/\p{Cc}/gu, ' ').replace(BIDI, '')
+    .replace(/\s+/g, ' ').trim().toWellFormed()
+  if (!cut && fits(t, n)) return t
+  if (fits(`${t}...`, n)) return `${t}...`
   let kept = ''
   for (const { segment } of graphemes.segment(t)) {
     if (!fits(kept + segment, n - 3)) break
@@ -152,7 +161,7 @@ export function sessionJson(d) {
     results: a.results.slice(0, d.top.results).map(x => ({
       key: x.key, tokensEst: round(x.tokens), carryEst: round(x.carry), what: clip(x.what, COMMAND_WIDTH),
     })),
-    prompts: a.turns.slice(0, d.top.prompts).map(x => ({ text: clip(x.text, PROMPT_WIDTH), ts: x.ts, calls: x.calls, tokens: round(x.tokens) })),
+    prompts: a.turns.slice(0, d.top.prompts).map(x => ({ text: clip(x.text, PROMPT_WIDTH, x.cut), ts: x.ts, calls: x.calls, tokens: round(x.tokens) })),
     warnings: d.warnings,
   }
 }
@@ -187,7 +196,7 @@ export function sessionText(d) {
   if (a.turns.length) {
     out.push('', 'Costliest prompts')
     out.push(...table([['tokens', 'r'], ['calls', 'r'], ['when', 'l'], ['prompt', 'l']],
-      a.turns.slice(0, d.top.prompts).map(x => [tok(x.tokens), x.calls, shortWhen(x.ts), clip(x.text, PROMPT_WIDTH)])))
+      a.turns.slice(0, d.top.prompts).map(x => [tok(x.tokens), x.calls, shortWhen(x.ts), clip(x.text, PROMPT_WIDTH, x.cut)])))
   }
   return out.join('\n')
 }

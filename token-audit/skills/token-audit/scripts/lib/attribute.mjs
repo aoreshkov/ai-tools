@@ -253,7 +253,7 @@ export function analyzeSession(parsed, { weights = DEFAULT_WEIGHTS, subagents = 
     results.push({ key: actionKey(tu), tokens, carry, what: describe(tu, parsed.stats.cwd) })
   }
 
-  const turnTotals = parsed.turns.map(t => ({ text: t.text, ts: t.ts, calls: 0, tokens: 0 }))
+  const turnTotals = parsed.turns.map(t => ({ text: t.text, cut: t.cut, ts: t.ts, calls: 0, tokens: 0 }))
   for (const c of calls) {
     if (c.turn == null) continue
     turnTotals[c.turn].calls++

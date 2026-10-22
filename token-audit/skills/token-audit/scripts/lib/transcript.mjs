@@ -6,11 +6,15 @@
 
 // Newest Claude Code version whose transcripts this parser was checked against. Bump it
 // after checking a newer release's transcripts.
-export const TESTED_MAX_VERSION = '2.1.306'
+export const TESTED_MAX_VERSION = '2.1.308'
 
-// The formatter's prompt width. One character more is kept, so it can tell a prompt that
-// was cut from one that fits and mark the cut.
+// The formatter's prompt width. A longer prompt is kept to this and flagged as cut, so the
+// formatter marks it even when stripped characters make what is left fit.
 const PROMPT_SNIPPET = 110
+
+// Claude Code's version as transcripts record it (2.1.306, or with a pre-release or build
+// tag). Anything else is counted and left out rather than printed.
+const VERSION = /^\d{1,4}(\.\d{1,6}){1,3}([-+][0-9A-Za-z.-]{1,32})?$/
 
 // Returns { calls, toolUses, turns, sidechain, stats }.
 // - calls: one per API response (deduped by message.id), in order of first appearance.
@@ -27,7 +31,7 @@ export function parseTranscript(lines, { sidechain = false } = {}) {
   const turns = []
   const versions = new Set()
   const stats = {
-    lines: 0, badLines: 0, assistantRecords: 0, noUsage: 0, compactions: 0,
+    lines: 0, badLines: 0, badVersions: 0, assistantRecords: 0, noUsage: 0, compactions: 0,
     title: '', first: null, last: null, cwd: null, versions: [],
   }
   let segment = 0
@@ -47,7 +51,10 @@ export function parseTranscript(lines, { sidechain = false } = {}) {
       stats.badLines++
       continue
     }
-    if (typeof o.version === 'string') versions.add(o.version)
+    if (typeof o.version === 'string') {
+      if (VERSION.test(o.version)) versions.add(o.version)
+      else stats.badVersions++
+    }
     if (typeof o.timestamp === 'string') {
       if (!stats.first) stats.first = o.timestamp
       stats.last = o.timestamp
@@ -122,7 +129,7 @@ function readUser(o, { calls, toolUses, turns, segment, turn }) {
   if (o.isMeta || o.isCompactSummary) return turn
   const text = promptText(content)
   if (text == null) return turn
-  const next = { text: text.slice(0, PROMPT_SNIPPET + 1), ts: typeof o.timestamp === 'string' ? o.timestamp : null }
+  const next = { text: text.slice(0, PROMPT_SNIPPET), cut: text.length > PROMPT_SNIPPET, ts: typeof o.timestamp === 'string' ? o.timestamp : null }
   turns.push(next)
   return next
 }
