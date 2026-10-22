@@ -241,6 +241,14 @@ test('planner that throws stops the run with planner-unavailable', async () => {
   assert.equal(of('reviewer').length, 0)
 })
 
+test('a planner error reaches the result and the log on one line and bounded', async () => {
+  const { result, logs } = await run({}, { ...quiet, planner: () => { throw new Error('no such agent\n' + 'x'.repeat(400)) } })
+  assert.equal(result.reason, 'planner-unavailable')
+  assert.match(result.detail, /^no such agent\\u000ax+\.\.\.$/)
+  assert.ok(result.detail.length <= 303, String(result.detail.length))
+  assert.ok(logs.some(l => l.includes(result.detail)))
+})
+
 test('planner that returns null stops the run with planner-unavailable', async () => {
   const { result } = await run({}, { ...quiet, planner: () => null })
   assert.equal(result.reason, 'planner-unavailable')
@@ -847,6 +855,17 @@ test('a reporter whose write was denied is not read as a written report', async 
   assert.ok(logs.some(l => l.includes('no file was written')))
 })
 
+test('a denied write\'s detail reaches the result on one line and bounded', async () => {
+  const { result, logs } = await run({ modules: ['core'], lenses: ['security'] }, {
+    ...quiet,
+    reporter: () => ({ written: false, detail: 'denied\n' + 'x'.repeat(400) }),
+  })
+  assert.match(result.reportError, /^the reporter could not write the file: denied\\u000ax+\.\.\.$/)
+  const detail = result.reportError.slice('the reporter could not write the file: '.length)
+  assert.ok(detail.length <= 303, String(detail.length))
+  assert.ok(logs.every(l => !l.includes('\n')))
+})
+
 test('a free-text reporter reply is not evidence that the file exists', async () => {
   const { result } = await run({ modules: ['core'], lenses: ['security'] }, {
     ...quiet,
@@ -1329,6 +1348,9 @@ test('verifyOnly sends every listed finding to a verifier and runs no planner or
   const prompt = of('reporter')[0].prompt
   assert.match(prompt, /Mode: verify-only/)
   assert.match(prompt, /Verify-only run: no reviewer ran/)
+  // The earlier coverage is not passed on, so the reporter must not guess where it is.
+  assert.match(prompt, /given none of the earlier run's coverage/)
+  assert.match(prompt, /do not name a file/)
   assert.doesNotMatch(prompt, /Module x lens pairs:/)
   // The old verifyState is not passed on to the verifier as part of the claim.
   assert.doesNotMatch(of('verifier')[0].prompt, /over-budget/)

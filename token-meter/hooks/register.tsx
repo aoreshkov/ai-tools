@@ -51,10 +51,11 @@ const readBranch = async ($: EngineInterface): Promise<string | null> => {
   return null
 }
 
-// Never rejects, so the clock's `void refreshBranch($)` leaves nothing unhandled
+// Never rejects, so the clock's `void refreshBranch($)` leaves nothing unhandled. A failed
+// read is logged and keeps the branch last read.
 const refreshBranch = ($: EngineInterface): Promise<void> =>
   guarded($, 'branch refresh', async () => {
-    const name = await readBranch($).catch(() => null)
+    const name = await readBranch($)
     if ((await read($, branch)) !== name) await update($, branch, () => name)
   })
 
@@ -67,14 +68,25 @@ const setHidden = async ($: EngineInterface, hidden: boolean): Promise<void> => 
   try {
     await $.store.set(HIDDEN_KEY, hidden)
   } catch (error) {
-    $.ui.log(`token-meter: band ${hidden ? 'hidden' : 'shown'} for this session only: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`band ${hidden ? 'hidden' : 'shown'} for this session only: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+// null when the store cannot be read: the band then stays as $.state has it, rather than
+// coming back after the user hid it
+const readHidden = async ($: EngineInterface): Promise<boolean | null> => {
+  try {
+    return (await $.store.get(HIDDEN_KEY)) === true
+  } catch (error) {
+    $.ui.log(`hidden setting not read, band left as it is: ${String(error)}`, { to: 'debug' })
+    return null
   }
 }
 
 const reload = async ($: EngineInterface): Promise<void> => {
   await guarded($, 'reload', async () => {
-    const hidden = (await $.store.get(HIDDEN_KEY).catch(() => undefined)) === true
-    if ((await read($, isHidden)) !== hidden) await update($, isHidden, () => hidden)
+    const hidden = await readHidden($)
+    if (hidden !== null && (await read($, isHidden)) !== hidden) await update($, isHidden, () => hidden)
     await record($, await $.session.usage())
   })
   await refreshBranch($)
@@ -116,11 +128,10 @@ export const register: Register = on => {
   on('turn.step', async function* ($, e, next) {
     if (e.agentId === undefined) {
       const level = e.effort === undefined ? null : String(e.effort)
-      try {
+      // Logged, not thrown: a failed write must not hold up the request
+      await guarded($, 'effort', async () => {
         if ((await read($, effort)) !== level) await update($, effort, () => level)
-      } catch {
-        // A failed write must not hold up the request
-      }
+      })
     }
     return yield* next(e)
   })

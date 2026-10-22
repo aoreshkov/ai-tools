@@ -1,5 +1,40 @@
 # Changelog
 
+## token-meter 0.2.2
+
+- A failed repository read during a branch refresh is logged to the debug log and keeps
+  the branch last read, instead of being dropped silently and clearing the branch.
+- A failed read of the hidden setting is logged, and the band stays as it is instead of
+  coming back after the user hid it.
+- A failed effort write in `turn.step` is logged instead of dropped. The request still
+  goes on unchanged.
+- The debug lines no longer name the plugin themselves: Claude Code already prefixes it.
+- Tests: a failing store write and read, a failing repository read, and a measurement
+  that cannot be read, each with its debug line.
+
+## review-kit 0.2.2
+
+- A reporter that answers `written: false` has its `detail` kept on one line and bounded
+  in `reportError` and the log, as 0.2.1 already promised. Only a thrown error was.
+- A planner error is kept on one line and bounded in the log and in `detail`, like every
+  other cause.
+- A verify-only report says that the earlier run's coverage gaps are not available to it
+  and are in that run's own result, instead of guessing where they are recorded.
+- `scripts/seeded-defects-real-run.mjs`: a failed scaffold deletes the scratch workspace
+  (unless `--keep`) and leaves no empty results folder.
+
+## token-audit 0.2.2
+
+- A record whose `timestamp` is not an ISO date and time is counted in one warning and
+  left out, as a malformed `version` already was. Its first characters went straight
+  into the `started` and `when` columns and the session header, newlines and escapes
+  included.
+- `--json` titles and action names lose control, C1 and bidi characters, as prompts and
+  commands already did. `JSON.stringify` escapes only C0 controls.
+- Subagent usage written into a parent transcript without a message id is counted in the
+  subagent and session totals instead of being dropped.
+- The `--json` shape is unchanged.
+
 ## review-kit 0.2.1
 
 - A run whose reporter gave no answer (skipped, or died on an API error) now says so in

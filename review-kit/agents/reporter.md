@@ -59,7 +59,8 @@ these headings, in this order, so tools that read the report can find each secti
   selected, from the numbers given in the prompt, and the cause of each failure the prompt
   lists. State them plainly; a reader must not mistake this report for full coverage when
   it is not. Pairs not selected in a run that continues an earlier one are named as such,
-  not as gaps of that earlier run, when the prompt says so.
+  not as gaps of that earlier run, when the prompt says so. Never say where coverage you
+  were not given is recorded.
 
 Keep every section heading even when it is empty, and say in one line that it is empty.
 Never write a refuted or dismissed finding into the report, in any section: one that

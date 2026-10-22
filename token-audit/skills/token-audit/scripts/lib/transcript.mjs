@@ -16,6 +16,11 @@ const PROMPT_SNIPPET = 110
 // tag). Anything else is counted and left out rather than printed.
 const VERSION = /^\d{1,4}(\.\d{1,6}){1,3}([-+][0-9A-Za-z.-]{1,32})?$/
 
+// An ISO 8601 date and time, as transcripts record it (2026-09-01T10:00:00.000Z). Anything
+// else is counted and left out rather than printed.
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$/
+const timestamp = v => (typeof v === 'string' && TIMESTAMP.test(v) ? v : null)
+
 // Returns { calls, toolUses, turns, sidechain, stats }.
 // - calls: one per API response (deduped by message.id), in order of first appearance.
 // - toolUses: Map tool_use id -> { id, name, input, callIdx, result }.
@@ -31,7 +36,7 @@ export function parseTranscript(lines, { sidechain = false } = {}) {
   const turns = []
   const versions = new Set()
   const stats = {
-    lines: 0, badLines: 0, badVersions: 0, assistantRecords: 0, noUsage: 0, compactions: 0,
+    lines: 0, badLines: 0, badVersions: 0, badTimestamps: 0, assistantRecords: 0, noUsage: 0, compactions: 0,
     title: '', first: null, last: null, cwd: null, versions: [],
   }
   let segment = 0
@@ -55,9 +60,13 @@ export function parseTranscript(lines, { sidechain = false } = {}) {
       if (VERSION.test(o.version)) versions.add(o.version)
       else stats.badVersions++
     }
-    if (typeof o.timestamp === 'string') {
-      if (!stats.first) stats.first = o.timestamp
-      stats.last = o.timestamp
+    if (o.timestamp != null) {
+      const ts = timestamp(o.timestamp)
+      if (!ts) stats.badTimestamps++
+      else {
+        if (!stats.first) stats.first = ts
+        stats.last = ts
+      }
     }
     if (!stats.cwd && typeof o.cwd === 'string') stats.cwd = o.cwd
 
@@ -88,7 +97,7 @@ export function parseTranscript(lines, { sidechain = false } = {}) {
         const usage = readUsage(msg.usage)
         if (!usage) stats.noUsage++
         if (o.isSidechain && !sidechain) {
-          if (usage && msg.id) sideById.set(msg.id, usage)
+          if (usage) sideById.set(typeof msg.id === 'string' ? msg.id : `#${stats.lines}`, usage)
           break
         }
         const id = typeof msg.id === 'string' ? msg.id : `#${stats.lines}`
@@ -129,7 +138,7 @@ function readUser(o, { calls, toolUses, turns, segment, turn }) {
   if (o.isMeta || o.isCompactSummary) return turn
   const text = promptText(content)
   if (text == null) return turn
-  const next = { text: text.slice(0, PROMPT_SNIPPET), cut: text.length > PROMPT_SNIPPET, ts: typeof o.timestamp === 'string' ? o.timestamp : null }
+  const next = { text: text.slice(0, PROMPT_SNIPPET), cut: text.length > PROMPT_SNIPPET, ts: timestamp(o.timestamp) }
   turns.push(next)
   return next
 }

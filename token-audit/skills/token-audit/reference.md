@@ -55,8 +55,10 @@ rest, and `--json` lists them all.
 ## Limits
 
 - Result sizes and carry are estimates; totals are not.
-- Titles, prompts and commands are shown without terminal escapes, control characters
-  or bidi controls, so they cannot recolour, rewrite or reorder the output.
+- Titles, prompts, commands and action names are shown without terminal escapes, control
+  characters or bidi controls, in text and in `--json`, so they cannot recolour, rewrite or
+  reorder the output. A timestamp that is not an ISO date and time is counted in a warning
+  and left out.
 - Only this machine's transcripts. For ongoing or team-wide tracking, Claude Code's
   OpenTelemetry export (`claude_code.token.usage`, `api_request` and `tool_result`
   events) is the supported source; `/usage` shows billing figures.

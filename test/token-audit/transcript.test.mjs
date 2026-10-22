@@ -87,6 +87,23 @@ test('versions of an unknown shape are counted, not kept', () => {
   assert.equal(p.stats.badVersions, 2)
 })
 
+test('timestamps of an unknown shape are counted, not kept', () => {
+  const rec = timestamp => JSON.stringify({ type: 'user', timestamp, message: { content: 'hi' } })
+  const p = parseTranscript([
+    rec('2026-09-01T10:00\n\u001b[2Jfake'), rec('2026-09-01T10:00:00.123Z'), rec(42), rec('2026-09-01T11:00:00+02:00'), rec('soon'),
+  ])
+  assert.equal(p.stats.first, '2026-09-01T10:00:00.123Z')
+  assert.equal(p.stats.last, '2026-09-01T11:00:00+02:00')
+  assert.deepEqual(p.turns.map(t => t.ts), [null, '2026-09-01T10:00:00.123Z', null, '2026-09-01T11:00:00+02:00', null])
+  assert.equal(p.stats.badTimestamps, 3)
+})
+
+test('sidechain usage without a message id is kept, not dropped', () => {
+  const side = id => JSON.stringify({ type: 'assistant', isSidechain: true, message: { ...(id ? { id } : {}), usage: { output_tokens: 7 } } })
+  const p = parseTranscript([side(null), side(null), side('s1'), side('s1')])
+  assert.deepEqual(p.sidechain.map(u => u.out), [7, 7, 7])
+})
+
 test('tolerates missing fields and unknown record types', () => {
   const p = parseTranscript([
     '{"type":"assistant"}',

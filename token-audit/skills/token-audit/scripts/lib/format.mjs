@@ -30,12 +30,15 @@ const fits = (t, n) => t.length <= n && Buffer.byteLength(t) <= n
 // joiner is a format character too, but it holds emoji together, so it stays.
 const BIDI = /[؜‎‏‪-‮⁦-⁩]/g
 // Whole escape sequences go first, so no `[31m` is left behind; other controls become
-// spaces and collapse with the rest of the whitespace. Then at most n characters and n
-// UTF-8 bytes, `...` included when cut, or always when `cut` says the text was already
-// shortened. The cut falls between graphemes, so an emoji or an accented letter stays whole.
+// spaces and collapse with the rest of the whitespace. JSON.stringify escapes C0 controls
+// but not C1 or bidi ones, so --json text goes through this too.
+export const clean = s => stripVTControlCharacters(String(s ?? '')).replace(/\p{Cc}/gu, ' ').replace(BIDI, '')
+  .replace(/\s+/g, ' ').trim().toWellFormed()
+// Cleaned, then at most n characters and n UTF-8 bytes, `...` included when cut, or always
+// when `cut` says the text was already shortened. The cut falls between graphemes, so an
+// emoji or an accented letter stays whole.
 export const clip = (s, n, cut = false) => {
-  const t = stripVTControlCharacters(String(s ?? '')).replace(/\p{Cc}/gu, ' ').replace(BIDI, '')
-    .replace(/\s+/g, ' ').trim().toWellFormed()
+  const t = clean(s)
   if (!cut && fits(t, n)) return t
   if (fits(`${t}...`, n)) return `${t}...`
   let kept = ''
@@ -90,7 +93,7 @@ export function rankJson(d) {
 const sessionRow = s => ({
   rank: s.rank,
   id: s.id,
-  title: s.title,
+  title: clean(s.title),
   first: s.first,
   last: s.last,
   calls: s.totals.all.calls,
@@ -141,7 +144,7 @@ export function sessionJson(d) {
   return {
     format: FORMAT,
     command: 'session',
-    session: { id: d.id, title: d.title, first: d.first, last: d.last, versions: d.versions },
+    session: { id: d.id, title: clean(d.title), first: d.first, last: d.last, versions: d.versions },
     weights: d.weights,
     totals: {
       calls: t.main.calls, input: round(t.main.in), cacheWrite: round(t.main.cw), cacheRead: round(t.main.cr),
@@ -155,11 +158,11 @@ export function sessionJson(d) {
     },
     parallelCalls: a.parallelCalls,
     actions: a.actions.slice(0, d.top.actions).map(x => ({
-      key: x.key, category: x.category, uses: x.uses, tokens: round(x.tokens), share: round4(share(x.tokens, a.grand)),
+      key: clean(x.key), category: x.category, uses: x.uses, tokens: round(x.tokens), share: round4(share(x.tokens, a.grand)),
       output: round(x.output), resultTokensEst: round(x.resultTokens), carryEst: round(x.carry),
     })),
     results: a.results.slice(0, d.top.results).map(x => ({
-      key: x.key, tokensEst: round(x.tokens), carryEst: round(x.carry), what: clip(x.what, COMMAND_WIDTH),
+      key: clean(x.key), tokensEst: round(x.tokens), carryEst: round(x.carry), what: clip(x.what, COMMAND_WIDTH),
     })),
     prompts: a.turns.slice(0, d.top.prompts).map(x => ({ text: clip(x.text, PROMPT_WIDTH, x.cut), ts: x.ts, calls: x.calls, tokens: round(x.tokens) })),
     warnings: d.warnings,
@@ -209,7 +212,7 @@ export function categoriesJson(d) {
   return {
     format: FORMAT,
     command: 'categories',
-    session: { id: d.id, title: d.title },
+    session: { id: d.id, title: clean(d.title) },
     totals: { calls: a.totals.main.calls, total: round(a.totals.main.total) },
     parallelCalls: a.parallelCalls,
     categories: a.categories.map(c => ({ name: c.name, uses: c.uses, tokens: round(c.tokens), share: round4(c.share) })),

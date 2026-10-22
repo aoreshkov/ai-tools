@@ -42,12 +42,12 @@ const stubSession = (
   cwd = 'C:\\work\\ai-tools',
   root = 'C:\\work\\ai-tools',
   files: Record<string, string> = { 'C:/work/ai-tools/.git/HEAD': 'ref: refs/heads/main\n' },
-  repo: typeof REPO | null = REPO,
+  repo: typeof REPO | null | (() => typeof REPO | null) = REPO,
 ) => {
   on('session.cwd', () => ({ value: cwd }))
   on('session.root', () => ({ value: root }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.repo', () => ({ value: repo }))
+  on('session.repo', () => ({ value: typeof repo === 'function' ? repo() : repo }))
   const reads: string[] = []
   on('fs.read', ($, e) => {
     // The engine hands the hook the path resolved in the platform's own spelling: on
@@ -412,6 +412,49 @@ describe('hooks', () => {
     expect(reads).toEqual([])
   })
 
+  test('a failed repository read keeps the branch last read, and logs why', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    let failing = false
+    stubSession(on, undefined, undefined, undefined, () => {
+      if (failing) throw new Error('repo unavailable')
+      return REPO
+    })
+    on('ui.status', () => ({ value: undefined }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    const logs: string[] = []
+    on('ui.log', ($, e) => {
+      logs.push(e.text)
+      return { value: undefined }
+    })
+
+    await $.session.measure({ ...CALM, changed: ['context'] })
+    failing = true
+    await $.session.measure({ ...CALM, changed: ['context'] })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /⎇ main$/ })).toBeDefined()
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toMatch(/^branch refresh failed: /)
+  })
+
+  test('a measurement that cannot be read is logged, still reads the branch, and passes the result on', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const { reads } = stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    const logs: { text: string; to: string }[] = []
+    on('ui.log', ($, e) => {
+      logs.push({ text: e.text, to: e.to })
+      return { value: undefined }
+    })
+
+    // A shape the engine's types rule out, so the figures cannot be read
+    const broken = { ...CALM, rateLimits: null as unknown as typeof CALM.rateLimits }
+    expect(await $.session.measure({ ...broken, changed: ['context'] })).toEqual({ changed: ['context'] })
+    expect(logs.map(l => l.to)).toEqual(['debug'])
+    expect(logs[0]?.text).toMatch(/^measurement failed: /)
+    expect(reads.some(r => r.endsWith('/.git/HEAD'))).toBe(true)
+  })
+
   test('the band yields to a survey', async ($, on) => {
     mock.clock(on, { now: NOW })
     stubSession(on)
@@ -511,6 +554,53 @@ describe('hooks', () => {
       expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
       await ui.unmount()
     }
+  })
+
+  test('a failed store write still hides the band for this session, and logs why', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    on('ui.render', ENGINE_BAND)
+    on('store.get', () => ({ value: undefined }))
+    on('store.set', () => { throw new Error('store locked') })
+    const logs: { text: string; to: string }[] = []
+    on('ui.log', ($, e) => {
+      logs.push({ text: e.text, to: e.to })
+      return { value: undefined }
+    })
+
+    await $.session.measure({ ...CALM, changed: ['context'] })
+    expect((await $.command.run({ ...COMMAND, args: 'hide' })).text).toBe('band hidden')
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+    expect(logs.map(l => l.to)).toEqual(['debug'])
+    expect(logs[0]?.text).toMatch(/for this session only/)
+  })
+
+  test('a failed store read leaves a hidden band hidden, and logs why', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    stubSession(on)
+    on('ui.status', () => ({ value: undefined }))
+    on('session.usage', () => ({ value: { startedAt: 0, ...CALM } }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    on('classic.SessionStart', () => ({}))
+    on('ui.render', ENGINE_BAND)
+    on('store.get', () => { throw new Error('store locked') })
+    on('store.set', () => ({ value: undefined }))
+    const logs: string[] = []
+    on('ui.log', ($, e) => {
+      logs.push(e.text)
+      return { value: undefined }
+    })
+
+    await $.session.measure({ ...CALM, changed: ['context'] })
+    await $.command.run({ ...COMMAND, args: 'hide' })
+    await $.classic.SessionStart({ source: 'resume' })
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toMatch(/hidden setting not read/)
   })
 
   test('/token-meter hide and show toggle the band', async ($, on) => {

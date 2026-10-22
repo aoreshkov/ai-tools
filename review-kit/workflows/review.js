@@ -907,7 +907,9 @@ function reportPrompt(payload) {
     VERIFY_ONLY
       ? 'Verify-only run: no reviewer ran, so this run adds no module x lens coverage. ' +
         VERIFY_ONLY.length + ' findings an earlier run left unverified were sent to verifiers. ' +
-        'The earlier run\'s own coverage gaps are not repeated here; say so in Coverage gaps.'
+        'This run was given none of the earlier run\'s coverage. In Coverage gaps, say that the ' +
+        'earlier run\'s coverage gaps are not available to this run and are in that run\'s own ' +
+        'result; do not name a file or any other place they might be recorded.'
       : 'Module x lens pairs: ' + (c.unselectedPairs.length
         ? c.planned + ' selected of ' + (c.planned + c.unselectedPairs.length) + ' applicable'
         : c.planned + ' applicable') + ', ' + c.reviewed + ' reviewed successfully, ' +
@@ -1104,7 +1106,7 @@ if (SUPPLIED) {
   } catch (err) {
     // Most likely an unresolvable agentType: the plugin is not loaded, or the
     // agents live somewhere else and need agentPrefix set.
-    planError = err && err.message ? err.message : String(err)
+    planError = causeOf(err)
   }
 
   if (!raw) {
@@ -1676,7 +1678,7 @@ async function finish(plan, everyFinding, reviewCoverage) {
       written = true
     } else {
       reportError = answer
-        ? 'the reporter could not write the file' + (answer.detail ? ': ' + answer.detail : '')
+        ? 'the reporter could not write the file' + (answer.detail ? ': ' + causeOf(answer.detail) : '')
         : NO_ANSWER
     }
   } catch (err) {
