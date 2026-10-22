@@ -1,5 +1,17 @@
 # Changelog
 
+## token-meter 0.2.2
+
+- A failed repository read during a branch refresh is logged to the debug log and keeps
+  the branch last read, instead of being dropped silently and clearing the branch.
+- A failed read of the hidden setting is logged, and the band stays as it is instead of
+  coming back after the user hid it.
+- A failed effort write in `turn.step` is logged instead of dropped. The request still
+  goes on unchanged.
+- The debug lines no longer name the plugin themselves: Claude Code already prefixes it.
+- Tests: a failing store write and read, a failing repository read, and a measurement
+  that cannot be read, each with its debug line.
+
 ## review-kit 0.2.2
 
 - A reporter that answers `written: false` has its `detail` kept on one line and bounded
