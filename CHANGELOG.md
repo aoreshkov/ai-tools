@@ -1,5 +1,17 @@
 # Changelog
 
+## review-kit 0.2.1
+
+- A run whose reporter gave no answer (skipped, or died on an API error) now says so in
+  `reportError`, as the planner and verifiers already did, so `report: null` always comes
+  with a cause. A reporter error is kept on one line and bounded, like every other cause.
+- Tests: each invalid-argument case checks the start of its own message, so a deleted
+  check can no longer pass on another message that mentions the same key.
+- `scripts/seeded-defects-real-run.mjs`: `result.json` sets `defectScoresCount` to false,
+  and records `claudeFailed`, when the session did not finish cleanly, as the exit code
+  already did. On Windows a timeout ends claude's whole process tree, not only the
+  `cmd.exe` of an npm shim, and the run settles even if a process still holds its pipes.
+
 ## token-meter 0.2.1
 
 - `/token-meter` and the once-a-minute refresh are set up before the band's figures are

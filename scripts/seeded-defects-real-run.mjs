@@ -47,6 +47,7 @@ const promptFile = frontmatter(readFileSync(join(CASE, 'prompt.md'), 'utf8'))
 const PROMPT = promptFile.body.trim()
 const MAX_TURNS = Number(scalar(promptFile.head, 'max_turns')) || 30
 const TIMEOUT_S = Number(scalar(promptFile.head, 'timeout_seconds')) || 1800
+const KILL_GRACE_MS = 10_000
 
 const graders = readdirSync(join(CASE, 'graders'))
   .filter(f => f.endsWith('.md'))
@@ -136,8 +137,21 @@ const trace = await new Promise(done => {
   const timer = setTimeout(() => {
     timedOut = true
     err += '\n[timed out after ' + TIMEOUT_S + 's]'
-    child.kill()
+    stop()
   }, TIMEOUT_S * 1000)
+  // On Windows, kill() would end only the process Node started: cmd.exe for a
+  // .cmd shim, with claude as its child. taskkill /T ends the whole tree. A
+  // process left holding the pipes would keep 'close' from firing, so after
+  // the kill the run settles on 'exit', or after a grace period at the latest.
+  const stop = () => {
+    if (process.platform === 'win32' && child.pid) {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    } else {
+      child.kill()
+    }
+    child.on('exit', finish)
+    setTimeout(() => finish(null), KILL_GRACE_MS).unref()
+  }
   const finish = code => {
     if (settled) return
     settled = true
@@ -214,7 +228,10 @@ const summary = {
   workflowToolAvailable: !!init?.tools?.includes('Workflow'),
   passed: results.filter(r => r.ok).length,
   total: results.length,
-  defectScoresCount: !!completed?.ok,
+  claudeFailed,
+  // The same rule as the exit code: a session that did not finish cleanly
+  // measures nothing, whatever the graders say
+  defectScoresCount: !claudeFailed && !!completed?.ok,
   graders: results,
 }
 writeFileSync(join(OUT, 'result.json'), JSON.stringify(summary, null, 2))
@@ -230,7 +247,8 @@ console.log('')
 console.log(summary.passed + '/' + summary.total + ' graders passed in ' + seconds + 's' +
   (summary.costUsd !== undefined ? ', $' + summary.costUsd.toFixed(2) : '') + '.')
 if (!summary.defectScoresCount) {
-  console.log('workflow-completed failed, so the found-* results do not measure the workflow.')
+  console.log((claudeFailed ? 'claude did not finish cleanly' : 'workflow-completed failed') +
+    ', so the found-* results do not measure the workflow.')
 }
 console.log('results: ' + OUT)
 

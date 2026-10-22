@@ -152,6 +152,8 @@ test('a misspelled argument stops the run and lists the known ones', async () =>
 })
 
 test('a known argument with a value of the wrong shape stops the run', async () => {
+  // Each case names the start of the message it must produce, so a check that was
+  // deleted is not covered up by another message that mentions the same key.
   const cases = [
     [{ modules: 'core' }, 'modules'],
     [{ modules: [] }, 'modules'],
@@ -160,8 +162,10 @@ test('a known argument with a value of the wrong shape stops the run', async () 
     [{ maxJobs: '2' }, 'maxJobs'],
     [{ maxJobs: 0 }, 'maxJobs'],
     [{ maxVerifyPerJob: 1.5 }, 'maxVerifyPerJob'],
+    [{ mode: 'incrmental' }, 'mode'],
     [{ mode: 'incrmental', changed: ['core/A.kt'] }, 'mode'],
     [{ changed: ['core/A.kt'] }, 'changed'],
+    [{ mode: 'full', changed: ['core/A.kt'] }, 'changed'],
     [{ mode: 'full', since: 'origin/main' }, 'since'],
     [{ mode: 'incremental', changed: 'core/A.kt' }, 'changed'],
     [{ verify: 'false' }, 'verify'],
@@ -172,7 +176,8 @@ test('a known argument with a value of the wrong shape stops the run', async () 
     [{ agents: ['my:reviewer'] }, 'agents'],
     [{ agents: { reviwer: 'my:reviewer' } }, 'agents.reviwer'],
     [{ carry: { title: 'x' } }, 'carry'],
-    [{ carry: [{ title: 'x', file: 'core/A.kt' }] }, 'carry'],
+    [{ carry: [{ title: 'x', file: 'core/A.kt' }] }, '1 of 1 carry entries'],
+    [{ verifyOnly: [{ title: 'x', file: 'core/A.kt' }] }, '1 of 1 verifyOnly entries'],
     [{ model: '' }, 'model'],
     [{ model: 4 }, 'model'],
     [{ model: ['opus'] }, 'model'],
@@ -190,10 +195,10 @@ test('a known argument with a value of the wrong shape stops the run', async () 
     [{ effort: { reviwer: 'low' } }, 'effort.reviwer'],
     [{ effort: { verifier: '' } }, 'effort.verifier'],
   ]
-  for (const [args, key] of cases) {
+  for (const [args, prefix] of cases) {
     const { result, calls, logs } = await run(args, quiet)
     assert.equal(result.reason, 'bad-args', JSON.stringify(args))
-    assert.ok(result.invalid.some(m => m.startsWith(key + ' ') || m.includes(' ' + key + ' ')),
+    assert.ok(result.invalid.some(m => m.startsWith(prefix + ' ')),
       JSON.stringify(args) + ' -> ' + JSON.stringify(result.invalid))
     assert.equal(calls.length, 0)
     assert.ok(logs.some(l => l.includes('Nothing was reviewed')))
@@ -811,6 +816,23 @@ test('a reporter that throws still returns every finding', async () => {
   assert.equal(result.reportError, 'write denied')
   assert.equal(result.confirmed.length, 1)
   assert.ok(logs.some(l => l.includes('write denied')))
+})
+
+test('a reporter with no answer leaves a cause in the result', async () => {
+  const { result, logs } = await run({ modules: ['core'], lenses: ['security'] }, { ...quiet, reporter: () => null })
+  assert.equal(result.ok, true)
+  assert.equal(result.report, null)
+  assert.match(result.reportError, /^no answer: skipped by the user, or died on an API error/)
+  assert.ok(logs.some(l => l.includes(result.reportError) && l.includes('no file was written')))
+})
+
+test('a reporter error reaches the result on one line and bounded, like every other cause', async () => {
+  const { result } = await run({ modules: ['core'], lenses: ['security'] }, {
+    ...quiet,
+    reporter: () => { throw new Error('write denied\n' + 'x'.repeat(400)) },
+  })
+  assert.match(result.reportError, /^write denied\\u000ax+\.\.\.$/)
+  assert.ok(result.reportError.length <= 303, String(result.reportError.length))
 })
 
 test('a reporter whose write was denied is not read as a written report', async () => {
