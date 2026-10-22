@@ -15,7 +15,7 @@ concurrency:
 env:
   # Pinned so a new Claude Code release cannot change what `validate --strict` accepts
   # without a reviewed commit. Bump it deliberately.
-  CLAUDE_CODE_VERSION: 2.1.296
+  CLAUDE_CODE_VERSION: 2.1.308
 
 jobs:
   test:
