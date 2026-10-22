@@ -1,5 +1,16 @@
 # Changelog
 
+## review-kit 0.2.2
+
+- A reporter that answers `written: false` has its `detail` kept on one line and bounded
+  in `reportError` and the log, as 0.2.1 already promised. Only a thrown error was.
+- A planner error is kept on one line and bounded in the log and in `detail`, like every
+  other cause.
+- A verify-only report says that the earlier run's coverage gaps are not available to it
+  and are in that run's own result, instead of guessing where they are recorded.
+- `scripts/seeded-defects-real-run.mjs`: a failed scaffold deletes the scratch workspace
+  (unless `--keep`) and leaves no empty results folder.
+
 ## token-audit 0.2.2
 
 - A record whose `timestamp` is not an ISO date and time is counted in one warning and

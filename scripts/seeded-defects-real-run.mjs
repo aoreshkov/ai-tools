@@ -74,7 +74,6 @@ const graders = readdirSync(join(CASE, 'graders'))
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
 const OUT = join(PLUGIN, 'evals', 'results', 'real-run-' + stamp)
-mkdirSync(OUT, { recursive: true })
 // Outside review-kit/: writes inside a --plugin-dir are refused as sensitive.
 const WORK = mkdtempSync(join(tmpdir(), 'review-kit-real-run-'))
 
@@ -82,8 +81,12 @@ console.log('workspace: ' + WORK)
 const scaffold = spawnSync('bash', [join(CASE, 'scaffold.sh').replace(/\\/g, '/')], { cwd: WORK, stdio: 'inherit' })
 if (scaffold.status !== 0) {
   console.error('scaffold failed (exit ' + scaffold.status + (scaffold.error ? ', ' + scaffold.error.message : '') + ')')
+  // Nothing ran, so no results folder was made; the workspace goes as it would after a run.
+  if (KEEP) console.error('workspace kept: ' + WORK)
+  else rmSync(WORK, { recursive: true, force: true })
   process.exit(2)
 }
+mkdirSync(OUT, { recursive: true })
 
 // The prompt goes in on stdin, not as an argument: it has newlines, which a
 // `.cmd` shim run through cmd.exe would split.
