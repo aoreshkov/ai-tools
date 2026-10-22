@@ -1677,10 +1677,10 @@ async function finish(plan, everyFinding, reviewCoverage) {
     } else {
       reportError = answer
         ? 'the reporter could not write the file' + (answer.detail ? ': ' + answer.detail : '')
-        : ''
+        : NO_ANSWER
     }
   } catch (err) {
-    reportError = err && err.message ? err.message : String(err)
+    reportError = causeOf(err)
   }
 
   if (!written) {

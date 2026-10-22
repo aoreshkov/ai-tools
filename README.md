@@ -565,7 +565,10 @@ It builds the scaffold in a scratch directory and runs the case's prompt through
 are left out, and the plugin comes from this checkout. It then applies the case's
 graders. Results go to `review-kit/evals/results/real-run-<time>/`, and the script needs
 `bash` for the scaffold. A run takes about 90 seconds and costs about a dollar. Pass
-`--keep` to keep the scratch directory.
+`--keep` to keep the scratch directory. A session that timed out, crashed or exited
+non-zero fails the run whatever the graders say, and `result.json` then sets
+`defectScoresCount` to false. On a timeout the script ends claude's whole process tree,
+the `.cmd` shim's included on Windows.
 
 Release notes are in [CHANGELOG.md](CHANGELOG.md). To contribute, see
 [CONTRIBUTING.md](CONTRIBUTING.md); to report a vulnerability, see [SECURITY.md](SECURITY.md).
