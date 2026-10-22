@@ -1,5 +1,17 @@
 # Changelog
 
+## token-audit 0.2.2
+
+- A record whose `timestamp` is not an ISO date and time is counted in one warning and
+  left out, as a malformed `version` already was. Its first characters went straight
+  into the `started` and `when` columns and the session header, newlines and escapes
+  included.
+- `--json` titles and action names lose control, C1 and bidi characters, as prompts and
+  commands already did. `JSON.stringify` escapes only C0 controls.
+- Subagent usage written into a parent transcript without a message id is counted in the
+  subagent and session totals instead of being dropped.
+- The `--json` shape is unchanged.
+
 ## review-kit 0.2.1
 
 - A run whose reporter gave no answer (skipped, or died on an API error) now says so in

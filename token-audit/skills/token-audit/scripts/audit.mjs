@@ -43,7 +43,7 @@ export function run(argv, { env = process.env, cwd = process.cwd(), read = readL
       stdout.push(USAGE)
       return { code: 0, stdout: stdout.join('\n'), stderr: '' }
     }
-    const ctx = { ...opts, config: configDir(opts.configDir, env), cwd, read, warnings: [], versions: new Set(), bad: 0, badVersions: 0, noUsage: 0 }
+    const ctx = { ...opts, config: configDir(opts.configDir, env), cwd, read, warnings: [], versions: new Set(), bad: 0, badVersions: 0, badTimestamps: 0, noUsage: 0 }
     const result = COMMANDS[opts.command](ctx)
     stdout.push(result)
     stderr.push(...finishWarnings(ctx).map(w => `token-audit: warning: ${w}`))
@@ -120,6 +120,7 @@ function load(ctx, file, options) {
   for (const v of parsed.stats.versions) ctx.versions.add(v)
   ctx.bad += parsed.stats.badLines
   ctx.badVersions += parsed.stats.badVersions
+  ctx.badTimestamps += parsed.stats.badTimestamps
   ctx.noUsage += parsed.stats.noUsage
   return parsed
 }
@@ -178,6 +179,7 @@ function finishWarnings(ctx) {
   }
   if (ctx.bad) w.push(`${ctx.bad} unparsable transcript line(s) skipped`)
   if (ctx.badVersions) w.push(`${ctx.badVersions} record(s) with a version of unknown shape; their version was ignored`)
+  if (ctx.badTimestamps) w.push(`${ctx.badTimestamps} record(s) with a timestamp of unknown shape; their timestamp was ignored`)
   if (ctx.noUsage) w.push(`${ctx.noUsage} assistant record(s) without usage data skipped`)
   return w
 }

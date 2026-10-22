@@ -294,7 +294,8 @@ test('control, escape and bidi characters from transcripts never reach the outpu
       { type: 'user', message: { content: `prompt ${HOSTILE}` }, timestamp: '2026-09-01T10:00:00Z' },
       { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: `echo ${HOSTILE}` } }], usage: { input_tokens: 5, output_tokens: 5 } } },
       { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r'.repeat(500) }] } },
-      { type: 'assistant', message: { id: 'm2', content: [], usage: { input_tokens: 1, output_tokens: 1 } } },
+      { type: 'user', message: { content: `later ${HOSTILE}` }, timestamp: `2026-09-01T11:00\n${HOSTILE}` },
+      { type: 'assistant', message: { id: 'm2', content: [{ type: 'tool_use', id: 't2', name: `Tool ${HOSTILE}`, input: {} }], usage: { input_tokens: 1, output_tokens: 1 } } },
     ]
     fs.writeFileSync(path.join(proj, 's.jsonl'), lines.map(l => JSON.stringify(l)).join('\n'))
     for (const cmd of ['rank', 'session', 'categories']) {
@@ -303,11 +304,23 @@ test('control, escape and bidi characters from transcripts never reach the outpu
       assert.doesNotMatch(out, CONTROLS, `${cmd}: ${JSON.stringify(out)}`)
       for (const leftover of ['[31m', '8;;', '[0m']) assert.ok(!out.includes(leftover), `${cmd}: ${leftover} left in ${JSON.stringify(out)}`)
     }
-    const j = JSON.parse(run(['session', 's', '--project', proj, '--json'], { env: {}, cwd: t.dir }).stdout)
-    for (const s of [...j.prompts.map(p => p.text), ...j.results.map(r => r.what)]) {
-      assert.doesNotMatch(s, CONTROLS, JSON.stringify(s))
-    }
+    const json = args => JSON.parse(run([...args, '--project', proj, '--json'], { env: {}, cwd: t.dir }).stdout)
+    const j = json(['session', 's'])
+    const r = json(['rank'])
+    const c = json(['categories', 's'])
+    const texts = [
+      ...j.prompts.map(p => p.text), ...j.results.map(x => x.what), ...j.results.map(x => x.key), ...j.actions.map(x => x.key),
+      j.session.title, ...r.sessions.map(s => s.title), c.session.title,
+    ]
+    for (const s of texts) assert.doesNotMatch(s, CONTROLS, JSON.stringify(s))
     assert.match(j.prompts[0].text, /^prompt a red link bell c1 evil$/)
+    assert.equal(j.session.title, 'title a red link bell c1 evil')
+    assert.equal(r.sessions[0].title, j.session.title)
+    assert.ok(j.actions.some(x => x.key === 'Tool a red link bell c1 evil'), JSON.stringify(j.actions))
+    // The hostile timestamp is dropped and counted, never printed.
+    assert.equal(j.session.last, '2026-09-01T10:00:00Z')
+    assert.equal(j.prompts.find(p => p.text.startsWith('later')).ts, null)
+    assert.ok(j.warnings.includes('1 record(s) with a timestamp of unknown shape; their timestamp was ignored'), JSON.stringify(j.warnings))
   } finally {
     t.done()
   }
