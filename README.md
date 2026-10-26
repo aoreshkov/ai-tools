@@ -11,7 +11,7 @@ plugin marketplace.
 | [`token-audit`](#token-audit)   | Ranks past sessions by token use and shows which actions and prompts drove it | Node 22+ on `PATH`           | this repository                                                        |
 | [`token-meter`](#token-meter)   | A live band above the prompt: folder, branch, model, effort, context, limits, cost | Claude Code 2.1.287+          | this repository                                                        |
 | [`kotlin-lib`](#kotlin-lib)     | MCP server and skills that read the real sources of any Maven Kotlin/Java library | Docker                   | [aoreshkov/kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp)     |
-| [`oracle-forms`](#oracle-forms) | MCP server and a skill that read Oracle Forms modules (`.fmb`, `.mmb`, `.pll`, `.olb`) | A JDK 21+ on `PATH`     | [aoreshkov/oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp) |
+| [`oracle-forms`](#oracle-forms) | MCP server and a skill that read Oracle Forms modules (`.fmb`, `.mmb`, `.pll`, `.olb`) | A JDK 25+ (on `PATH` or configured) | [aoreshkov/oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp) |
 
 `kotlin-lib` and `oracle-forms` are developed and released in their own repositories. This
 marketplace points at a released tag of each, so it serves only released versions.

@@ -1,5 +1,13 @@
 # Changelog
 
+## Marketplace: oracle-forms 1.4.0
+
+- `oracle-forms` moves from 1.2.0 (`aoreshkov/oracle-forms-mcp` v0.13.0) to 1.4.0
+  (v0.16.0), pinned to that tag and its commit.
+- It now needs a JDK 25 or later, up from 21. A new `java` option takes the path to a
+  `java` executable that is not on `PATH`.
+- The entry's description and the README requirement say so.
+
 ## token-meter 0.2.2
 
 - A failed repository read during a branch refresh is logged to the debug log and keeps
