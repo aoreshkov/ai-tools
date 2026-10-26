@@ -55,11 +55,11 @@
         "source": "git-subdir",
         "url": "https://github.com/aoreshkov/oracle-forms-mcp.git",
         "path": "plugins/oracle-forms",
-        "ref": "v0.13.0",
-        "sha": "f28e412658fd442ab17fa1e80bb6b0e7743c3891"
+        "ref": "v0.16.0",
+        "sha": "91822d697d4192c5e0ba94605c4aadaab885703d"
       },
       "displayName": "Oracle Forms",
-      "description": "Read Oracle Forms modules (.fmb/.mmb/.pll/.olb) from a directory — blocks, items, triggers, program units, PL/SQL, and durable annotations. Needs a JDK 21+ on PATH.",
+      "description": "Read Oracle Forms modules (.fmb/.mmb/.pll/.olb) from a directory — blocks, items, triggers, program units, PL/SQL, and durable annotations. Needs a JDK 25+, on PATH or configured by path.",
       "author": {
         "name": "Atanas Oreshkov",
         "url": "https://github.com/aoreshkov"
