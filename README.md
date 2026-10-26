@@ -10,7 +10,7 @@ plugin marketplace.
 | [`review-kit`](#review-kit)     | Multi-lens code review as a dynamic workflow                                 | Dynamic workflows turned on   | this repository                                                        |
 | [`token-audit`](#token-audit)   | Ranks past sessions by token use and shows which actions and prompts drove it | Node 22+ on `PATH`           | this repository                                                        |
 | [`token-meter`](#token-meter)   | A live band above the prompt: folder, branch, model, effort, context, limits, cost | Claude Code 2.1.287+          | this repository                                                        |
-| [`kotlin-lib`](#kotlin-lib)     | MCP server and skills that read the real sources of any Maven Kotlin/Java library | Docker                   | [aoreshkov/kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp)     |
+| [`kotlin-lib`](#kotlin-lib)     | MCP server and skills that read the real sources of any Maven Kotlin/Java library | A JDK 25+ (on `PATH` or configured) | [aoreshkov/kotlin-lib-mcp](https://github.com/aoreshkov/kotlin-lib-mcp)     |
 | [`oracle-forms`](#oracle-forms) | MCP server and a skill that read Oracle Forms modules (`.fmb`, `.mmb`, `.pll`, `.olb`) | A JDK 25+ (on `PATH` or configured) | [aoreshkov/oracle-forms-mcp](https://github.com/aoreshkov/oracle-forms-mcp) |
 
 `kotlin-lib` and `oracle-forms` are developed and released in their own repositories. This
@@ -51,8 +51,8 @@ claude plugin uninstall kotlin-lib@kotlin-lib-mcp
 claude plugin install kotlin-lib@aoreshkov-ai-tools
 ```
 
-Library caches (the `kotlin-lib-mcp-cache` Docker volume) and Oracle Forms annotations (in
-the OS cache directory) live outside the plugin, so they carry over. `oracle-forms`
+The `kotlin-lib` library cache and Oracle Forms annotations live in the OS cache directory,
+outside the plugin, so they carry over. `oracle-forms`
 downloads its server again and asks for its settings again, because both belong to the
 install.
 
@@ -60,8 +60,9 @@ install.
 
 Gives Claude the published sources jar of any Maven Kotlin/Java library, parsed with the
 Kotlin Analysis API: resolved signatures, KDoc, the dependency tree, version diffs and
-source search, instead of what the model remembers. The plugin runs the server's Docker
-image and adds skills that make Claude reach for it, plus `/kotlin-lib:api`,
+source search, instead of what the model remembers. The plugin runs the server on your JDK,
+downloading the released build on first use and checking its checksum, and adds skills
+that make Claude reach for it, plus `/kotlin-lib:api`,
 `/kotlin-lib:migrate` and a setup helper.
 
 Documentation, tools and other ways to run it (release zip, IntelliJ, VS Code):
