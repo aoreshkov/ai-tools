@@ -34,11 +34,11 @@
         "source": "git-subdir",
         "url": "https://github.com/aoreshkov/kotlin-lib-mcp.git",
         "path": "plugin",
-        "ref": "v0.7.0",
-        "sha": "34a8d6ea8894842a54d528fd755e5a8dd9456d3e"
+        "ref": "v0.9.1",
+        "sha": "1fbb4a8309447f06bc60c005fbc65d3c79e73ad4"
       },
       "displayName": "Kotlin & Java Library Sources",
-      "description": "Answers Kotlin/Java library questions from the real published sources jar — resolved signatures, KDoc, dependency tree and source search — instead of recalling them. Needs Docker.",
+      "description": "Answers Kotlin/Java library questions from the real published sources jar — resolved signatures, KDoc, dependency tree and source search — instead of recalling them. Needs a JDK 25+, on PATH or configured by path.",
       "author": {
         "name": "Atanas Oreshkov",
         "url": "https://github.com/aoreshkov"

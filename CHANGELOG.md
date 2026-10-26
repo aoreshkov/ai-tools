@@ -1,5 +1,18 @@
 # Changelog
 
+## Marketplace: kotlin-lib 1.0.0
+
+- `kotlin-lib` moves from 0.4.0 (`aoreshkov/kotlin-lib-mcp` v0.7.0) to 1.0.0 (v0.9.1),
+  pinned to that tag and its commit.
+- It runs the server on a JDK 25 or later instead of Docker. On first use the plugin
+  downloads the released server and checks its checksum. Its options are `java`, for a
+  `java` executable that is not on `PATH`, and `server_version`.
+- Libraries are cached in the OS cache directory, not the `kotlin-lib-mcp-cache` Docker
+  volume, so each library is fetched once more after the update.
+- New in the server since v0.7.0: deprecations in the index and `diff_api` for public-API
+  changes between two versions.
+- The entry's description and the README requirement say so.
+
 ## Marketplace: oracle-forms 1.4.0
 
 - `oracle-forms` moves from 1.2.0 (`aoreshkov/oracle-forms-mcp` v0.13.0) to 1.4.0
