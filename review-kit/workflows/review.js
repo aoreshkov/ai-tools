@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Multi-lens code review: plan the lenses that fit this repo, fan out read-only reviewers per module x lens, adversarially verify every finding, and write one ranked report',
-  whenToUse: 'Reviewing a whole repository, many modules, or a large diff from several points of view at once. Pass args as an object; unknown keys and values of the wrong type stop the run. Always pass today as YYYY-MM-DD. Pass out inside the repository\'s private, ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one) and bound cost with maxJobs (an integer). Findings past maxVerifyPerJob (an integer, default 2) per reviewer are reported unverified, so raise it when asked to verify more. Pass model or effort only when the user asks for one: a model alias or full ID ("opus") and an effort level (low to max), each one value for every role or an object by role (planner, reviewer, verifier, reporter); keep both the same on every relaunch. When a result has a `next` field, follow it: it says what to ask the user and how to relaunch.',
+  whenToUse: 'Reviewing a whole repository, many modules, or a large diff from several points of view at once. Pass args as an object; unknown keys and values of the wrong type stop the run. Always pass today as YYYY-MM-DD. Pass out inside the repository\'s private, ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one) and bound cost with maxJobs (an integer). Findings past maxVerifyPerJob (an integer, default 2) per reviewer are reported unverified, so raise it when asked to verify more; votes (an integer, or by severity) sets verifiers per finding. Pass model or effort only when the user asks for one: a model alias or full ID ("opus") and an effort level (low to max), each one value for every role or an object by role (planner, reviewer, verifier, reporter); keep both the same on every relaunch. When a result has a `next` field, follow it: it says what to ask the user and how to relaunch.',
   phases: [
     { title: 'Plan', detail: 'one agent maps the modules and picks the lenses that apply' },
     { title: 'Review', detail: 'one read-only reviewer per module x lens pair' },
@@ -32,7 +32,15 @@ export const meta = {
 //                    with reason 'needs-confirmation' so the caller can ask;
 //                    passing maxJobs, or setting a budget, is that choice.
 //   verify           false to skip the Verify phase entirely
-//   maxVerifyPerJob  adversarial checks per reviewer (default 2)
+//   maxVerifyPerJob  findings per reviewer sent to verification (default 2)
+//   votes            independent verifiers per finding, by the severity the
+//                    reviewer claimed: an integer from 1 to 5 for every
+//                    severity, or an object such as { medium: 3 }; a severity
+//                    left out keeps its default (critical 3, high 3, medium
+//                    1, low 1). Each vote of several gets its own refutation
+//                    angle, and the majority of the votes that completed
+//                    decides. Fewer than 2 completed votes, or a tie, leaves
+//                    the finding unverified.
 //   agentPrefix      agent namespace (default 'review-kit:'; '' when the
 //                    agents live in .claude/agents/ instead of the plugin)
 //   agents           per-role agent type overrides, e.g.
@@ -58,8 +66,8 @@ export const meta = {
 //   verifyOnly       a previous result's `unverified`; no planner or reviewer
 //                    runs, every listed finding goes to a verifier, and the
 //                    report holds them with `carry`. Takes only today, out,
-//                    agentPrefix, agents, model, effort, plan and carry
-//                    besides.
+//                    agentPrefix, agents, model, effort, votes, plan and
+//                    carry besides.
 //   previous         a previous result's `continuation`, passed unchanged. It
 //                    supplies the plan, mode, pairs to run (unless `pairs` is
 //                    passed; [] reviews nothing), the confirmed findings to
@@ -69,19 +77,21 @@ export const meta = {
 //                    combined with plan, carry, verifyOnly, mode, since,
 //                    changed, modules, lenses or verify.
 //
-// The two caps bound the worst case at maxJobs * (1 + maxVerifyPerJob) + 2
-// agents, plus one verifier per finding a `previous` left unverified. They
-// default low on purpose: a review that costs more than reading the diff
-// yourself does not get run twice. Raise them for a full sweep.
+// The caps bound the worst case at maxJobs * (1 + maxVerifyPerJob * V) + 2
+// agents, where V is the largest `votes` value (3 by default), plus V
+// verifiers per finding a `previous` left unverified. They default low on
+// purpose: a review that costs more than reading the diff yourself does not
+// get run twice. Raise them for a full sweep.
 //
 // Every result carries `version`, the code that ran. A result that can be
 // continued carries `continuation` and `next`, the caller's instructions for
 // the relaunch; they live there rather than in meta.whenToUse, which every
-// session pays for.
+// session pays for. `coverage.yield` counts what each reviewed pair raised,
+// confirmed and refuted, across the runs a continuation chains.
 
 // Equal to review-kit/.claude-plugin/plugin.json `version` (a test checks).
 // Not in meta, which must stay a pure literal.
-const SCRIPT_VERSION = '0.3.1'
+const SCRIPT_VERSION = '0.4.0'
 
 function posInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
@@ -128,8 +138,8 @@ function underPath(file, root) {
 // before any agent starts. undefined is a plain run with every default.
 const KNOWN_ARGS = [
   'mode', 'since', 'changed', 'today', 'out', 'modules', 'lenses', 'maxJobs',
-  'verify', 'maxVerifyPerJob', 'agentPrefix', 'agents', 'model', 'effort', 'plan', 'pairs', 'carry',
-  'verifyOnly', 'previous',
+  'verify', 'maxVerifyPerJob', 'votes', 'agentPrefix', 'agents', 'model', 'effort', 'plan', 'pairs',
+  'carry', 'verifyOnly', 'previous',
 ]
 
 // `previous` supplies each of these itself. Taking one from the caller as well
@@ -178,6 +188,29 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 function effortProblem(value) {
   return EFFORT_LEVELS.indexOf(value) === -1 ? 'must be one of ' + EFFORT_LEVELS.join(', ') : ''
+}
+
+// Votes are set per severity, the reviewer's claimed one. A wrong finding
+// costs the most where the claim is gravest, so those get several skeptics by
+// default. Past 5, votes repeat refutation angles and add only cost.
+const SEVERITIES = ['critical', 'high', 'medium', 'low']
+const DEFAULT_VOTES = { critical: 3, high: 3, medium: 1, low: 1 }
+const MAX_VOTES = 5
+
+function voteCountOk(n) {
+  return Number.isInteger(n) && n >= 1 && n <= MAX_VOTES
+}
+
+function votesProblems(value) {
+  const what = 'an integer from 1 to ' + MAX_VOTES
+  if (typeof value === 'number') return voteCountOk(value) ? [] : ['votes must be ' + what]
+  if (!isObject(value)) return ['votes must be ' + what + ' for every severity, or an object mapping a severity to one']
+  const bad = []
+  for (const key of Object.keys(value)) {
+    if (SEVERITIES.indexOf(key) === -1) bad.push('votes.' + key + ' is not a severity (' + SEVERITIES.join(', ') + ')')
+    else if (!voteCountOk(value[key])) bad.push('votes.' + key + ' must be ' + what)
+  }
+  return bad
 }
 
 // `model` and `effort` each take one value for every role, or an object that
@@ -262,7 +295,20 @@ function continuationProblems(p) {
       bad.push('previous.' + key + ' has entries without a title, file or integer line')
     }
   }
+  // Absent from a continuation made before 0.4.0, which kept no yield.
+  if (p.yield !== undefined && !(Array.isArray(p.yield) && p.yield.every(isYieldEntry))) {
+    bad.push('previous.yield must be a list of { pair, raw, confirmed, refuted } counts')
+  }
   return bad
+}
+
+function isCount(n) {
+  return Number.isInteger(n) && n >= 0
+}
+
+function isYieldEntry(e) {
+  return isObject(e) && isNameList([e.pair]) && isCount(e.raw) && isCount(e.confirmed) &&
+    isCount(e.refuted) && e.confirmed + e.refuted <= e.raw
 }
 
 // A known key with a value of the wrong shape is as dangerous as a misspelled
@@ -296,6 +342,8 @@ function invalidArgs(a) {
     if (has(key) && !posInt(a[key], 0)) bad.push(key + ' must be a positive integer')
   }
   if (has('verify') && typeof a.verify !== 'boolean') bad.push('verify must be true or false')
+  if (has('votes')) bad.push(...votesProblems(a.votes))
+  if (has('votes') && a.verify === false) bad.push('votes does not apply with verify: false, which starts no verifier')
   if (has('agentPrefix') && typeof a.agentPrefix !== 'string') {
     bad.push('agentPrefix must be a string ("" when the agents live in .claude/agents/)')
   }
@@ -406,6 +454,19 @@ const MAX_JOBS = posInt(A.maxJobs, BUDGET_JOBS || 12)
 const CAP_CHOSEN = posInt(A.maxJobs, 0) > 0 || BUDGET_JOBS !== null
 const VERIFY_PER_JOB = posInt(A.maxVerifyPerJob, 2)
 const VERIFY = A.verify !== false
+
+// One count per severity: the defaults, with whatever the caller named on top.
+function votesFor(value) {
+  const out = { ...DEFAULT_VOTES }
+  for (const s of SEVERITIES) {
+    const n = typeof value === 'number' ? value : isObject(value) ? value[s] : undefined
+    if (voteCountOk(n)) out[s] = n
+  }
+  return out
+}
+
+const VOTES = votesFor(A.votes)
+const MOST_VOTES = Math.max(...SEVERITIES.map(s => VOTES[s]))
 // A continuation without a plan comes from a verifyOnly run that had none, and
 // can only re-verify, so it runs as one.
 const VERIFY_ONLY = Array.isArray(A.verifyOnly) && A.verifyOnly.length ? A.verifyOnly
@@ -417,8 +478,10 @@ const WANT_LENSES = asList(A.lenses)
 // empty list means review nothing and only re-verify.
 const WANT_PAIRS = A.pairs !== undefined ? asList(A.pairs) : PREV ? PREV.pairs : null
 const CARRY = PREV ? PREV.confirmed : Array.isArray(A.carry) ? A.carry : []
-// What earlier runs reviewed, so the report can state combined coverage.
+// What earlier runs reviewed, so the report can state combined coverage, and
+// what those pairs yielded.
 const PRIOR_REVIEWED = PREV ? PREV.reviewedPairs : []
+const PRIOR_YIELD = PREV && Array.isArray(PREV.yield) ? PREV.yield : []
 
 const ROLES = isObject(A.agents) ? A.agents : {}
 
@@ -546,13 +609,20 @@ const FINDINGS_SCHEMA = {
   },
 }
 
+// severity is required for the reason evidence is: a structured-output model
+// drops optional fields, and an optional re-grade was set by none of 78
+// verdicts in a real run.
 const VERDICT_SCHEMA = {
   type: 'object',
-  required: ['refuted', 'reason'],
+  required: ['refuted', 'severity', 'reason'],
   properties: {
     refuted: { type: 'boolean' },
+    severity: {
+      type: 'string',
+      enum: SEVERITIES,
+      description: 'The severity the code supports, on the reviewer\'s scale. When refuted, the claimed one.',
+    },
     reason: { type: 'string' },
-    correctedSeverity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
   },
 }
 
@@ -585,8 +655,8 @@ function rankable(value) {
 // Always returns a key that exists in SEVERITY_RANK, so a finding can never
 // sort below 'low' or reach the reporter with no severity at all.
 function severityOf(finding) {
-  const corrected = finding.verdict ? rankable(finding.verdict.correctedSeverity) : null
-  return corrected || rankable(finding.severity) || FALLBACK_SEVERITY
+  const verified = finding.verdict && finding.verdict.refuted === false ? rankable(finding.verdict.severity) : null
+  return verified || rankable(finding.severity) || FALLBACK_SEVERITY
 }
 
 function bySeverity(a, b) {
@@ -803,8 +873,11 @@ function stopped(fields) {
 }
 
 // What a later run needs to pick up where this one ends, and nothing else: the
-// caller re-emits it as tool input, so every field costs output tokens.
-function continuationOf(plan, pairs, confirmed, unverified, reviewedPairs) {
+// caller re-emits it as tool input, so every field costs output tokens. The
+// per-vote reasons stay in the result; a later run re-verifies or carries a
+// finding without them.
+function continuationOf(plan, pairs, confirmed, unverified, reviewedPairs, yieldList) {
+  const lean = list => list.map(({ votes, ...rest }) => rest)
   const c = { version: SCRIPT_VERSION, mode: MODE }
   if (MODE === 'incremental') {
     c.since = SINCE
@@ -812,14 +885,61 @@ function continuationOf(plan, pairs, confirmed, unverified, reviewedPairs) {
   }
   c.plan = plan
   c.pairs = pairs
-  c.confirmed = confirmed
-  c.unverified = unverified
+  c.confirmed = lean(confirmed)
+  c.unverified = lean(unverified)
   c.reviewedPairs = reviewedPairs
+  c.yield = yieldList
   c.digest = digestOf(c)
   return c
 }
 
-const SAME_ARGS = 'the same today, out, model and effort'
+// What one reviewed pair raised, and what verification made of it. Every
+// reviewed pair has an entry, so a pair that raised nothing is counted too.
+function pairYield(pair, findings) {
+  return {
+    pair: pair,
+    raw: findings.length,
+    confirmed: findings.filter(f => f.verdict && f.verdict.refuted === false).length,
+    refuted: findings.filter(f => f.verdict && f.verdict.refuted === true).length,
+  }
+}
+
+// The yield earlier runs recorded, with the verdicts this run reached on the
+// findings they left unverified, followed by this run's own pairs. A pair
+// reviewed again here keeps only this run's entry. A re-checked finding names
+// its lens, or every lens that merged it, so each of those pairs is credited.
+function combinedYield(prior, rechecked, own) {
+  const fresh = new Set(own.map(e => e.pair))
+  const earlier = prior.filter(e => !fresh.has(e.pair)).map(e => ({ ...e }))
+  for (const f of rechecked) {
+    if (!f.verdict || typeof f.verdict.refuted !== 'boolean') continue
+    for (const lens of String(f.lens || '').split(', ')) {
+      const entry = earlier.find(e => e.pair === lens + ' @ ' + f.module)
+      if (!entry || entry.confirmed + entry.refuted >= entry.raw) continue
+      if (f.verdict.refuted) entry.refuted++
+      else entry.confirmed++
+    }
+  }
+  return earlier.concat(own)
+}
+
+// Per lens, summed over its pairs, for the report's yield table.
+function lensYield(entries) {
+  const byLens = new Map()
+  for (const e of entries) {
+    const at = e.pair.indexOf(' @ ')
+    const lens = at === -1 ? e.pair : e.pair.slice(0, at)
+    if (!byLens.has(lens)) byLens.set(lens, { lens: lens, pairs: 0, raw: 0, confirmed: 0, refuted: 0 })
+    const sum = byLens.get(lens)
+    sum.pairs++
+    sum.raw += e.raw
+    sum.confirmed += e.confirmed
+    sum.refuted += e.refuted
+  }
+  return Array.from(byLens.values())
+}
+
+const SAME_ARGS = 'the same today, out, model, effort and votes'
 
 // The caller's manual for a finished run that left work, written once per run
 // instead of into meta.whenToUse, which every session pays for.
@@ -919,24 +1039,136 @@ function reviewPrompt(job) {
   return lines.join('\n')
 }
 
-// One adversarial check. Never throws: a verifier that dies or is blocked is a
-// tooling failure on this finding, not a reason to lose it. A failure keeps
-// its cause in `verifyError`, so a bad verifier override says what went wrong.
-async function verifyOne(finding) {
+// The angles a finding's votes split between, in this order, so several
+// skeptics look for different ways it can be wrong instead of repeating one
+// another. The angle goes in the prompt, not in a separate agent file, so
+// every vote shares the verifier's prompt-cache prefix.
+const VOTE_ANGLES = [
+  {
+    id: 'reachability',
+    hunt: 'Is the failure reachable? Hunt for the guard the reviewer missed: a caller that validates ' +
+      'first, a type or initializer that makes the state impossible, a thread or dispatcher ' +
+      'confinement, a framework guarantee.',
+  },
+  {
+    id: 'handled',
+    hunt: 'Is it already handled? Hunt for a catch further up, a retry, a fallback or default, or a ' +
+      'test that pins the behaviour the reviewer called a bug.',
+  },
+  {
+    id: 'deliberate',
+    hunt: 'Is it deliberate? Hunt for a design reason the code bears out: a CLAUDE.md rule, a ' +
+      'surrounding pattern, or documentation whose stated trade-off the code implements.',
+  },
+]
+
+function votesOf(finding) {
+  const n = VOTES[rankable(finding.severity) || FALLBACK_SEVERITY]
+  return n === 1 ? [null] : Array.from({ length: n }, (_, i) => VOTE_ANGLES[i % VOTE_ANGLES.length])
+}
+
+// One verifier agent. Never throws: a verifier that dies or is blocked is a
+// tooling failure on this vote, and its cause is kept.
+async function castVote(finding, angle, of) {
   try {
-    const verdict = await agent(verifyPrompt(finding), withOverrides('verifier', {
-      label: 'verify ' + finding.file + ':' + finding.line,
+    const verdict = await agent(verifyPrompt(finding, angle, of), withOverrides('verifier', {
+      label: 'verify ' + finding.file + ':' + finding.line + (angle ? ' (' + angle.id + ')' : ''),
       phase: 'Verify',
       agentType: VERIFIER,
       schema: VERDICT_SCHEMA,
     }))
-    if (!verdict) return { ...finding, verdict: null, verifyState: 'verifier-failed', verifyError: NO_ANSWER }
+    return verdict ? { angle: angle, verdict: verdict } : { angle: angle, verdict: null, error: NO_ANSWER }
+  } catch (err) {
+    return { angle: angle, verdict: null, error: causeOf(err) }
+  }
+}
+
+// A verdict that rules neither way is an answer, but not a check.
+function ruled(vote) {
+  return !!vote.verdict && typeof vote.verdict.refuted === 'boolean'
+}
+
+// What the result keeps of one vote: the ruling and its reason, or why there
+// was none.
+function voteRecord(vote) {
+  const out = { angle: vote.angle ? vote.angle.id : '' }
+  if (!vote.verdict) {
+    out.failed = vote.error || DROPPED
+    return out
+  }
+  if (ruled(vote)) out.refuted = vote.verdict.refuted
+  if (rankable(vote.verdict.severity)) out.severity = vote.verdict.severity
+  out.reason = typeof vote.verdict.reason === 'string' ? vote.verdict.reason : ''
+  return out
+}
+
+// The verified grade of a confirmed finding: the median of the confirming
+// votes' grades, the less severe one when their count is even, so a split
+// grade is never rounded up.
+function votedSeverity(confirms, claimed) {
+  const grades = confirms.map(v => rankable(v.verdict.severity)).filter(Boolean)
+    .sort((a, b) => SEVERITY_RANK[a] - SEVERITY_RANK[b])
+  return grades.length ? grades[Math.floor(grades.length / 2)] : claimed
+}
+
+// Turns the votes on one finding into one verdict. One vote decides alone, as
+// before votes existed. Several decide by the majority of the votes that
+// ruled: a vote that failed or ruled neither way counts for neither side.
+// Fewer than 2 rulings, or a tie, leaves the finding unverified with the
+// cause named, never refuted by default.
+function tally(finding, cast) {
+  if (cast.length === 1) {
+    const vote = cast[0]
+    if (!vote.verdict) return { ...finding, verdict: null, verifyState: 'verifier-failed', verifyError: vote.error || DROPPED }
+    return { ...finding, verdict: vote.verdict, verifyState: ruled(vote) ? 'checked' : 'verifier-inconclusive' }
+  }
+  const base = { ...finding, votes: cast.map(voteRecord) }
+  const rulings = cast.filter(ruled)
+  const confirms = rulings.filter(v => v.verdict.refuted === false)
+  const refutes = rulings.filter(v => v.verdict.refuted === true)
+  if (rulings.length >= 2 && confirms.length !== refutes.length) {
+    const confirmed = confirms.length > refutes.length
+    const claimed = rankable(finding.severity) || FALLBACK_SEVERITY
+    const side = confirmed ? confirms : refutes
     return {
-      ...finding,
-      verdict: verdict,
-      // A verdict that rules neither way is an answer, but not a check.
-      verifyState: typeof verdict.refuted === 'boolean' ? 'checked' : 'verifier-inconclusive',
+      ...base,
+      verifyState: 'checked',
+      verdict: {
+        refuted: !confirmed,
+        severity: confirmed ? votedSeverity(confirms, claimed) : claimed,
+        reason: String(side[0].verdict.reason || ''),
+      },
     }
+  }
+  if (rulings.length >= 2) {
+    return {
+      ...base,
+      verdict: null,
+      verifyState: 'votes-split',
+      verifyError: 'the verifiers split ' + confirms.length + ' confirmed to ' + refutes.length + ' refuted',
+    }
+  }
+  const failed = cast.filter(v => !v.verdict)
+  if (!failed.length) return { ...base, verdict: null, verifyState: 'verifier-inconclusive' }
+  return {
+    ...base,
+    verdict: null,
+    verifyState: 'verifier-failed',
+    verifyError: 'only ' + rulings.length + ' of ' + cast.length + ' votes ruled; ' +
+      unique(failed.map(v => v.error || DROPPED)).join('; '),
+  }
+}
+
+// Every vote on one finding, then the tally. Never throws: anything that goes
+// wrong is a verification failure on this finding, not a reason to lose it,
+// and it keeps its cause in `verifyError`, so a bad verifier override says
+// what went wrong.
+async function verifyOne(finding) {
+  try {
+    const angles = votesOf(finding)
+    if (angles.length === 1) return tally(finding, [await castVote(finding, null, 1)])
+    const cast = await parallel(angles.map(angle => () => castVote(finding, angle, angles.length)))
+    return tally(finding, cast.map((vote, i) => vote || { angle: angles[i], verdict: null, error: DROPPED }))
   } catch (err) {
     return { ...finding, verdict: null, verifyState: 'verifier-failed', verifyError: causeOf(err) }
   }
@@ -967,8 +1199,8 @@ function settleChecks(checked, sent) {
     { ...sent[i], verdict: null, verifyState: 'verifier-failed', verifyError: DROPPED })
 }
 
-function verifyPrompt(finding) {
-  return [
+function verifyPrompt(finding, angle, of) {
+  const lines = [
     'Try to refute this review finding.',
     '',
     'The reviewer\'s claim:',
@@ -990,7 +1222,17 @@ function verifyPrompt(finding) {
     '',
     'Read the cited code yourself and decide. Default to refuted when you cannot confirm',
     'the failure from what you read.',
-  ].join('\n')
+  ]
+  if (angle) {
+    lines.push(
+      '',
+      'You are one of ' + of + ' independent verifiers of this finding, each with its own refutation',
+      'angle. Yours is **' + angle.id + '**. ' + angle.hunt,
+      'Check first that the cited code says what the finding claims, then spend your effort on',
+      'your angle; the other verifiers cover the rest.',
+    )
+  }
+  return lines.join('\n')
 }
 
 // The planner's summary, every name and path it chose, the changed file
@@ -1087,6 +1329,40 @@ function combinedCoverage(c) {
     covered: c.reviewedPairs.length + earlier.length,
     neverReviewed: c.unselectedPairs.filter(p => !prior.has(p)),
   }
+}
+
+// The reporter needs a finding's vote tally, not every vote's reason.
+function voteTally(votes) {
+  const count = test => votes.filter(test).length
+  const parts = [count(v => v.refuted === false) + ' confirmed', count(v => v.refuted === true) + ' refuted']
+  const failed = count(v => v.failed)
+  const unsure = count(v => !v.failed && typeof v.refuted !== 'boolean')
+  if (failed) parts.push(failed + ' failed')
+  if (unsure) parts.push(unsure + ' ruled neither way')
+  return parts.join(', ') + ', of ' + votes.length + ' votes'
+}
+
+function forReporter(list) {
+  return list.map(f => Array.isArray(f.votes) ? { ...f, votes: voteTally(f.votes) } : f)
+}
+
+// The per-lens yield table, and the lenses with nothing confirmed, as facts.
+function yieldFacts(entries) {
+  const rows = lensYield(entries)
+  if (!rows.length) return []
+  const empty = rows.filter(r => !r.confirmed).map(r => r.lens)
+  return [
+    '',
+    '## Lens yield - one table at the end of Coverage gaps',
+    'Per lens: pairs reviewed, findings raised, confirmed, refuted' +
+      (PREV ? ', over this run and the earlier runs it continues' : '') + '. A lens counts its own ' +
+      'findings, before duplicates across lenses were merged. One line per lens, in that order:',
+    repoData('lens yield', rows.map(r => [r.lens, r.pairs, r.raw, r.confirmed, r.refuted].join(' | ')).join('\n')),
+    empty.length
+      ? factList('Lenses that confirmed nothing; some may still hold unverified findings:',
+        'lenses without a confirmed finding', empty)
+      : 'Every lens confirmed at least one finding.',
+  ]
 }
 
 function reportPrompt(payload) {
@@ -1206,7 +1482,14 @@ function reportPrompt(payload) {
       ' were refuted and dropped before reaching you. ' +
       v.overBudget + ' were never sent to a verifier (over the ' + VERIFY_PER_JOB +
       '-per-reviewer budget), ' + v.inconclusive + ' got a verdict that neither confirmed nor ' +
-      'refuted them, and ' + v.failed + ' were sent but the verifier failed or was blocked.',
+      'refuted them, ' + v.split + ' got votes that split evenly, and ' + v.failed +
+      ' were sent but the verifier failed or was blocked.',
+    v.enabled
+      ? 'Votes per finding, by the severity the reviewer claimed: ' +
+        SEVERITIES.map(s => s + ' ' + VOTES[s]).join(', ') + '. Several votes on one finding each ' +
+        'took a different refutation angle, and the majority of the votes that ruled decided. A ' +
+        'finding with `votes` gives its tally: say so where the vote was not unanimous.'
+      : '',
     v.failed
       ? 'State that ' + v.failed + ' findings could not be verified because the verifier failed - that is a tooling failure, not a judgement about those findings.'
       : '',
@@ -1229,13 +1512,14 @@ function reportPrompt(payload) {
       'that cite the same file within ' + GROUP_LINES + ' lines of each other, so a group can hold one ' +
       'defect seen by several lenses or distinct defects that sit close together. Decide every merge ' +
       'yourself, within a group or across groups.',
-    repoData('confirmed findings', JSON.stringify(groupNearby(payload.confirmed))),
+    repoData('confirmed findings', JSON.stringify(groupNearby(forReporter(payload.confirmed)))),
     '',
     '## UNVERIFIED findings (' + payload.unverified.length + ') - own section, marked unconfirmed',
     'Each carries a `verifyState`: `over-budget` (never checked), `verifier-failed` (the check',
     'itself failed), `verifier-inconclusive` (the verifier answered without ruling either way),',
-    'or `verification-off`.',
-    repoData('unverified findings', JSON.stringify(payload.unverified)),
+    '`votes-split` (as many votes confirmed as refuted), or `verification-off`.',
+    repoData('unverified findings', JSON.stringify(forReporter(payload.unverified))),
+    ...yieldFacts(c.yield),
   ].filter(line => line !== '').join('\n')
 }
 
@@ -1287,6 +1571,11 @@ if (PREV) {
     (PREV.unverified.length ? ' The re-checks add ' + PREV.unverified.length + ' verifiers to the worst case.' : ''))
 }
 
+if (VERIFY) {
+  log('Votes per finding, by claimed severity: ' + SEVERITIES.map(s => s + ' ' + VOTES[s]).join(', ') +
+    (A.votes === undefined ? ' (the default; pass votes to change it).' : '.'))
+}
+
 if (BUDGET_JOBS && !posInt(A.maxJobs, 0) && !VERIFY_ONLY) {
   log('Token budget ' + BUDGET_TOTAL + ': maxJobs set to ' + MAX_JOBS + ' at roughly ' +
     OUTPUT_TOKENS_PER_JOB + ' output tokens per module x lens job. Pass maxJobs to override.')
@@ -1330,13 +1619,15 @@ if (VERIFY_ONLY) {
   log('Verify-only run: ' + rechecks.length + ' findings from an earlier run go to verifiers; ' +
     'no planner or reviewer runs.')
   const checked = await parallel(rechecks.map(f => () => verifyOne(f)))
+  const settledChecks = settleChecks(checked, rechecks)
   const coverage = { planned: 0, reviewed: 0, capped: 0, blocked: 0, malformedFindings: 0, failureCauses: [] }
   for (const key of COVERAGE_LISTS) coverage[key] = []
   coverage.reviewedPairs = []
   coverage.priorReviewedPairs = PRIOR_REVIEWED
+  coverage.yield = combinedYield(PRIOR_YIELD, settledChecks, [])
   return await finish(
     SUPPLIED ? { repoSummary: SUPPLIED.repoSummary, modules: SUPPLIED.modules, lenses: SUPPLIED.lenses } : null,
-    settleChecks(checked, rechecks),
+    settledChecks,
     coverage,
     [],
   )
@@ -1650,13 +1941,14 @@ if (droppedJobs.length && !CAP_CHOSEN) {
     maxJobs: MAX_JOBS,
     applicable: allJobs.length,
     maxVerifyPerJob: VERIFY_PER_JOB,
+    votes: VOTES,
     wouldRun: jobs.map(pairLabel),
     wouldSkip: droppedJobs.map(pairLabel),
     repoSummary: plan.repoSummary,
     plan: plan,
     report: null,
     continuation: continuationOf(plan, allJobs.map(pairLabel), CARRY.filter(isAnchored),
-      PREV ? PREV.unverified : [], PRIOR_REVIEWED),
+      PREV ? PREV.unverified : [], PRIOR_REVIEWED, PRIOR_YIELD),
     next: allJobs.length + ' pairs apply, but the default cap runs ' + MAX_JOBS + ', so nothing was ' +
       'reviewed yet. Ask the user whether to run all ' + allJobs.length + ', only the ' + MAX_JOBS +
       ' in wouldRun, or pairs they choose from wouldRun and wouldSkip. Then relaunch with previous: this ' +
@@ -1799,8 +2091,9 @@ const owed = new Set(blockedPairs.concat(droppedJobs.map(pairLabel),
   PREV ? unselectedPairs.filter(p => PREV.pairs.map(normPair).indexOf(p) !== -1) : []))
 const leftPairs = applicable.map(pairLabel).filter(p => owed.has(p) && !reviewedEver.has(p))
 
-return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), []).concat(
-  settleChecks(rechecked, RECHECKS)), {
+const settledRechecks = settleChecks(rechecked, RECHECKS)
+
+return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), []).concat(settledRechecks), {
   planned: allJobs.length,
   reviewed: jobs.length - blockedPairs.length,
   capped: droppedJobs.length,
@@ -1825,6 +2118,8 @@ return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), [])
   failureCauses: reviewCauses,
   reviewedPairs: reviewedPairs,
   priorReviewedPairs: PRIOR_REVIEWED,
+  yield: combinedYield(PRIOR_YIELD, settledRechecks,
+    settled.filter(r => !r.blocked).map(r => pairYield(r.pair, r.findings))),
 }, leftPairs)
 
 // ---------------------------------------------------------------- report --
@@ -1837,7 +2132,7 @@ async function finish(plan, everyFinding, reviewCoverage, leftPairs) {
   // Reviewer causes arrive with the coverage; verifier causes are added here,
   // where a review run and a verifyOnly run meet.
   const verifyCauses = groupCauses(everyFinding
-    .filter(f => f.verifyState === 'verifier-failed')
+    .filter(f => f.verifyState === 'verifier-failed' || f.verifyState === 'votes-split')
     .map(f => ({ cause: f.verifyError || DROPPED, item: f.file + ':' + f.line })), 'findings')
   for (const fc of verifyCauses) log('Unverified: ' + causeLine(fc) + '.')
   const coverage = { ...reviewCoverage, failureCauses: reviewCoverage.failureCauses.concat(verifyCauses) }
@@ -1910,7 +2205,17 @@ async function finish(plan, everyFinding, reviewCoverage, leftPairs) {
     checked: everyFinding.filter(f => f.verifyState === 'checked').length,
     overBudget: everyFinding.filter(f => f.verifyState === 'over-budget').length,
     inconclusive: everyFinding.filter(f => f.verifyState === 'verifier-inconclusive').length,
+    split: everyFinding.filter(f => f.verifyState === 'votes-split').length,
     failed: everyFinding.filter(f => f.verifyState === 'verifier-failed').length,
+    votes: VOTES,
+    // Verifier agents spent beyond one per finding sent to verification.
+    extraVerifiers: everyFinding.reduce((sum, f) => sum + (Array.isArray(f.votes) ? f.votes.length - 1 : 0), 0),
+  }
+  if (verification.extraVerifiers) {
+    const voted = everyFinding.filter(f => Array.isArray(f.votes)).length
+    log('Votes: ' + voted + ' findings got several verifiers, ' + verification.extraVerifiers +
+      ' verifier agents beyond one per finding' + (verification.split ? '; ' + verification.split +
+        ' split evenly and stay unverified' : '') + '.')
   }
 
   const rechecked = VERIFY_ONLY ? everyFinding.length : PREV ? PREV.unverified.length : 0
@@ -1992,7 +2297,8 @@ async function finish(plan, everyFinding, reviewCoverage, leftPairs) {
     confirmed: confirmed,
     unverified: unverified,
     continuation: resumable
-      ? continuationOf(plan, leftPairs, confirmed, unverified, unique(PRIOR_REVIEWED.concat(coverage.reviewedPairs)))
+      ? continuationOf(plan, leftPairs, confirmed, unverified, unique(PRIOR_REVIEWED.concat(coverage.reviewedPairs)),
+        coverage.yield)
       : undefined,
     next: resumable ? finishedNext(leftPairs.length, unverified.length, coverage.capped, coverage.planned) : undefined,
   }

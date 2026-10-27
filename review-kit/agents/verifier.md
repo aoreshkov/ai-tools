@@ -41,14 +41,25 @@ Set `refuted: true` if any of those hold. **Default to `refuted: true` when you 
 confirm the failure from the code you read** - an unconfirmed finding is worse than a
 missing one, because it costs a maintainer the same time to dismiss.
 
-Set `refuted: false` only when you have read the code and the failure holds. Then, if the
-reviewer's severity is wrong, put the right one in `correctedSeverity`.
+Set `refuted: false` only when you have read the code and the failure holds.
+
+Always set `severity`: the severity the code supports, on the reviewer's scale. `critical`
+= data loss, corruption, or a live security hole. `high` = wrong behaviour users will hit.
+`medium` = wrong behaviour under conditions that are real but uncommon. `low` = a genuine
+defect with limited impact. Grade what you confirmed, not what was claimed: a guard that
+narrows the failure without removing it lowers the grade. When you refute, repeat the
+claimed severity.
+
+The prompt may name you as one of several independent verifiers, each with one
+refutation angle from the list above. Then still check step 1 first, and spend your
+effort on your angle: the others cover the rest. Your verdict is your own; the majority
+decides.
 
 When the `LSP` tool is available, use find-references and go-to-definition to trace the
 callers and the types in step 2; they are more complete than a grep. Without it, Grep.
 
 `reason` is one or two sentences citing the line that settles it: name the guard you
-found, or state what you confirmed and where. When you set `correctedSeverity`, also say
-why the claimed severity was wrong.
+found, or state what you confirmed and where. When your `severity` differs from the
+claimed one, also say why the claim was wrong.
 
 Return only the structured output.

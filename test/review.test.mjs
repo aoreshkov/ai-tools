@@ -7,7 +7,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 
 const SOURCE = readFileSync(new URL('../review-kit/workflows/review.js', import.meta.url), 'utf8')
 const AsyncFunction = (async () => {}).constructor
@@ -608,10 +608,14 @@ test('the cap is breadth first: every module is reviewed once before any gets a 
   assert.deepEqual(result.coverage.cappedPairs, ['tests @ core', 'tests @ app'])
 })
 
-test('agent count stays within maxJobs * (1 + maxVerifyPerJob) + 2', async () => {
+test('agent count stays within maxJobs * (1 + maxVerifyPerJob * votes) + 2', async () => {
   const many = () => ({ findings: [1, 2, 3, 4, 5].map(n => finding('f' + n, 'high')) })
-  const { calls } = await run({ maxJobs: 4, maxVerifyPerJob: 2 }, { ...quiet, reviewer: many })
-  assert.ok(calls.length <= 4 * 3 + 2, 'spawned ' + calls.length + ' agents')
+  const { calls, result } = await run({ maxJobs: 4, maxVerifyPerJob: 2 }, { ...quiet, reviewer: many })
+  // Every finding is high, so every verified one gets the default 3 votes: the bound is reached.
+  assert.equal(calls.length, 4 * (1 + 2 * 3) + 2)
+  assert.equal(result.verification.extraVerifiers, 4 * 2 * 2)
+  const single = await run({ maxJobs: 4, maxVerifyPerJob: 2, votes: 1 }, { ...quiet, reviewer: many })
+  assert.equal(single.calls.length, 4 * 3 + 2)
 })
 
 test('reviewers must quote evidence', async () => {
@@ -626,13 +630,13 @@ test('reviewers must quote evidence', async () => {
 test('findings are partitioned exhaustively into confirmed, refuted and unverified', async () => {
   const verdicts = {
     A: () => ({ refuted: true, reason: 'guarded' }),
-    B: () => ({ refuted: false, reason: 'holds', correctedSeverity: 'critical' }),
+    B: () => ({ refuted: false, reason: 'holds', severity: 'critical' }),
     C: () => null,
     D: () => ({ reason: 'no verdict given' }),
     G: () => { throw new Error('schema retries exhausted') },
   }
   const { result, of } = await run(
-    { modules: ['core'], lenses: ['security'], maxVerifyPerJob: 5 },
+    { modules: ['core'], lenses: ['security'], maxVerifyPerJob: 5, votes: 1 },
     {
       ...quiet,
       reviewer: () => ({
@@ -656,7 +660,8 @@ test('findings are partitioned exhaustively into confirmed, refuted and unverifi
   assert.equal(result.confirmed[0].severity, 'critical', 'verifier regrade wins')
   assert.equal(result.confirmed[0].claimedSeverity, 'high', 'the reviewer grade is kept beside it')
   // checked = confirmed + refuted: a verdict that rules neither way is not a check.
-  assert.deepEqual(result.verification, { enabled: true, checked: 2, overBudget: 2, inconclusive: 1, failed: 2 })
+  assert.deepEqual(result.verification, { enabled: true, checked: 2, overBudget: 2, inconclusive: 1, split: 0, failed: 2,
+    votes: { critical: 1, high: 1, medium: 1, low: 1 }, extraVerifiers: 0 })
   const states = Object.fromEntries(result.unverified.map(f => [f.title, f.verifyState]))
   assert.deepEqual(states, {
     C: 'verifier-failed',
@@ -676,7 +681,7 @@ test('a finding confirmed at the grade the reviewer claimed carries no claimedSe
   const { result, of } = await run({ modules: ['core'], lenses: ['security'] }, {
     ...quiet,
     reviewer: () => ({ findings: [finding('A', 'high')] }),
-    verifier: () => ({ refuted: false, reason: 'holds', correctedSeverity: 'high' }),
+    verifier: () => ({ refuted: false, reason: 'holds', severity: 'high' }),
   })
   assert.equal(result.confirmed[0].claimedSeverity, undefined)
   assert.doesNotMatch(of('reporter')[0].prompt, /re-graded by its verifier/)
@@ -704,6 +709,185 @@ test('a verify stage that throws keeps the findings instead of blocking the pair
   assert.equal(result.unverified[0].verifyState, 'verifier-failed')
 })
 
+test('the verifier must grade every finding it rules on', async () => {
+  const { of } = await run({ modules: ['core'], lenses: ['security'] }, findsOneConfirmed)
+  const schema = of('verifier')[0].opts.schema
+  assert.deepEqual(schema.required.slice().sort(), ['reason', 'refuted', 'severity'])
+  assert.equal(schema.properties.correctedSeverity, undefined)
+})
+
+test('a verified grade below the claim keeps claimedSeverity, and confirmed sorts by the verified grade', async () => {
+  const grades = { Over: 'low', Under: 'high', Same: 'medium' }
+  const { result, of } = await run({ modules: ['core'], lenses: ['security'], maxVerifyPerJob: 5, votes: 1 }, {
+    ...quiet,
+    reviewer: () => ({
+      findings: [
+        finding('Over', 'critical'),
+        finding('Under', 'medium', { line: 20 }),
+        finding('Same', 'medium', { line: 30 }),
+      ],
+    }),
+    verifier: prompt => ({ refuted: false, reason: 'holds', severity: grades[prompt.match(/Title: (\w+)/)[1]] }),
+  })
+  assert.deepEqual(result.confirmed.map(f => [f.title, f.severity, f.claimedSeverity]), [
+    ['Under', 'high', 'medium'],
+    ['Same', 'medium', undefined],
+    ['Over', 'low', 'critical'],
+  ])
+  assert.match(of('reporter')[0].prompt, /`claimedSeverity` was re-graded by its verifier/)
+})
+
+test('a refuting verdict never re-grades the finding', async () => {
+  const { result } = await run({ modules: ['core'], lenses: ['security'], votes: 1 }, {
+    ...quiet,
+    reviewer: () => ({ findings: [finding('A', 'high')] }),
+    verifier: () => ({ refuted: true, reason: 'guarded', severity: 'low' }),
+  })
+  assert.equal(result.counts.refuted, 1)
+  assert.deepEqual(result.confirmed, [])
+})
+
+// ------------------------------------------------------------------ votes --
+
+// One finding at `severity`, and a verifier whose answer depends on the
+// refutation angle named in its label.
+async function voteOn(byAngle, severity = 'high', extra = {}) {
+  return run({ modules: ['core'], lenses: ['security'], ...extra }, {
+    ...quiet,
+    reviewer: () => ({ findings: [finding('A', severity)] }),
+    verifier: (prompt, opts) => byAngle[opts.label.match(/\((\w+)\)$/)[1]](),
+  })
+}
+
+const yes = (severity = 'high') => () => ({ refuted: false, severity, reason: 'holds ' + severity })
+const no = () => ({ refuted: true, severity: 'high', reason: 'guarded' })
+const dies = () => { throw new Error('stalled') }
+
+test('a critical or high finding gets three votes, each with its own angle', async () => {
+  const { result, of } = await voteOn({ reachability: yes(), handled: yes(), deliberate: yes() })
+  const verifiers = of('verifier')
+  assert.deepEqual(verifiers.map(c => c.opts.label), [
+    'verify core/A.kt:10 (reachability)', 'verify core/A.kt:10 (handled)', 'verify core/A.kt:10 (deliberate)',
+  ])
+  assert.ok(verifiers.every(c => c.opts.agentType === 'review-kit:verifier'), 'one agent file for every angle')
+  assert.match(verifiers[0].prompt, /one of 3 independent verifiers[\s\S]*Yours is \*\*reachability\*\*/)
+  assert.match(verifiers[2].prompt, /Yours is \*\*deliberate\*\*/)
+  assert.equal(result.confirmed.length, 1)
+  assert.deepEqual(result.confirmed[0].votes.map(v => [v.angle, v.refuted]),
+    [['reachability', false], ['handled', false], ['deliberate', false]])
+  assert.equal(result.verification.extraVerifiers, 2)
+})
+
+test('a medium or low finding gets one verifier with the whole checklist, as before votes', async () => {
+  const { result, of } = await run({ modules: ['core'], lenses: ['security'] }, {
+    ...quiet,
+    reviewer: () => ({ findings: [finding('A', 'medium')] }),
+    verifier: () => ({ refuted: false, severity: 'medium', reason: 'holds' }),
+  })
+  assert.deepEqual(of('verifier').map(c => c.opts.label), ['verify core/A.kt:10'])
+  assert.doesNotMatch(of('verifier')[0].prompt, /independent verifiers/)
+  assert.equal(result.confirmed[0].votes, undefined)
+  assert.equal(result.verification.extraVerifiers, 0)
+})
+
+test('2 of 3 confirming votes confirm, at the lower median grade', async () => {
+  const { result, of } = await voteOn({ reachability: yes('critical'), handled: no, deliberate: yes('medium') })
+  assert.equal(result.confirmed.length, 1)
+  // The two confirming grades are critical and medium: an even count takes the less severe.
+  assert.equal(result.confirmed[0].severity, 'medium')
+  assert.equal(result.confirmed[0].claimedSeverity, 'high')
+  assert.equal(result.confirmed[0].verifierNote, 'holds critical')
+  const prompt = of('reporter')[0].prompt
+  assert.match(prompt, /"votes":"2 confirmed, 1 refuted, of 3 votes"/)
+  assert.doesNotMatch(prompt, /guarded/, 'the reporter gets the tally, not every reason')
+})
+
+test('three confirming votes take the middle grade', async () => {
+  const { result } = await voteOn({ reachability: yes('critical'), handled: yes('low'), deliberate: yes('high') })
+  assert.equal(result.confirmed[0].severity, 'high')
+})
+
+test('1 of 3 confirming votes refutes the finding', async () => {
+  const { result } = await voteOn({ reachability: no, handled: yes(), deliberate: no })
+  assert.equal(result.counts.refuted, 1)
+  assert.deepEqual(result.confirmed.concat(result.unverified), [])
+})
+
+test('1 confirm, 1 refute and 1 failed vote leave the finding unverified with the cause named', async () => {
+  const { result, of } = await voteOn({ reachability: yes(), handled: no, deliberate: dies })
+  assert.deepEqual(result.confirmed, [])
+  assert.equal(result.counts.refuted, 0, 'a failed vote is not a refutation')
+  assert.equal(result.unverified[0].verifyState, 'votes-split')
+  assert.deepEqual(result.unverified[0].votes.map(v => v.failed || v.refuted), [false, true, 'stalled'])
+  assert.deepEqual(result.coverage.failureCauses,
+    [{ cause: 'the verifiers split 1 confirmed to 1 refuted', findings: ['core/A.kt:10'] }])
+  assert.equal(result.verification.split, 1)
+  assert.match(of('reporter')[0].prompt, /1 got votes that split evenly/)
+  assert.match(result.next, /1 findings unverified/)
+})
+
+test('fewer than 2 votes that ruled leave the finding unverified, never refuted', async () => {
+  for (const byAngle of [
+    { reachability: no, handled: dies, deliberate: dies },
+    { reachability: yes(), handled: dies, deliberate: () => null },
+  ]) {
+    const { result } = await voteOn(byAngle)
+    assert.equal(result.counts.refuted, 0)
+    assert.deepEqual(result.confirmed, [])
+    const [f] = result.unverified
+    assert.equal(f.verifyState, 'verifier-failed')
+    assert.match(f.verifyError, /^only 1 of 3 votes ruled; stalled/)
+  }
+  const none = (await voteOn({ reachability: dies, handled: dies, deliberate: dies })).result
+  assert.equal(none.unverified[0].verifyError, 'only 0 of 3 votes ruled; stalled')
+})
+
+test('votes that rule neither way count for neither side', async () => {
+  const unsure = () => ({ severity: 'high', reason: 'cannot tell' })
+  const { result } = await voteOn({ reachability: yes(), handled: unsure, deliberate: unsure })
+  assert.equal(result.unverified[0].verifyState, 'verifier-inconclusive')
+  const two = (await voteOn({ reachability: yes(), handled: yes(), deliberate: unsure })).result
+  assert.equal(two.confirmed.length, 1)
+})
+
+test('votes sets the count for every severity, or for the ones it names', async () => {
+  const all = await voteOn({ reachability: yes() }, 'high', { votes: 1 })
+  assert.deepEqual(all.of('verifier').map(c => c.opts.label), ['verify core/A.kt:10'])
+  const medium = await run({ modules: ['core'], lenses: ['security'], votes: { medium: 5 } }, {
+    ...quiet,
+    reviewer: () => ({ findings: [finding('A', 'medium'), finding('B', 'high', { line: 20 })] }),
+    verifier: yes(),
+  })
+  // 5 for the medium one, the default 3 for the high one. Past three, the angles repeat.
+  assert.equal(medium.of('verifier').length, 8)
+  assert.deepEqual(medium.result.verification.votes, { critical: 3, high: 3, medium: 5, low: 1 })
+  assert.deepEqual(medium.of('verifier').map(c => c.opts.label).filter(l => l.includes('A.kt:10'))
+    .map(l => l.match(/\((\w+)\)$/)[1]), ['reachability', 'handled', 'deliberate', 'reachability', 'handled'])
+})
+
+test('votes of the wrong shape stop the run', async () => {
+  for (const votes of [0, 6, 2.5, '3', null, [3], { urgent: 3 }, { high: 0 }]) {
+    const { result, calls } = await run({ votes }, quiet)
+    assert.equal(result.reason, 'bad-args', JSON.stringify(votes))
+    assert.ok(result.invalid.some(m => m.startsWith('votes')), JSON.stringify(result.invalid))
+    assert.equal(calls.length, 0)
+  }
+  const off = await run({ votes: 3, verify: false }, quiet)
+  assert.ok(off.result.invalid.some(m => /votes does not apply with verify: false/.test(m)))
+})
+
+test('a vote the runtime drops is a failed vote, not a lost finding', async () => {
+  let n = 0
+  const dropping = async thunks => stubParallel(thunks).then(r => r.map(v => (v && v.angle && n++ === 0 ? null : v)))
+  const { result } = await run(
+    { modules: ['core'], lenses: ['security'] },
+    { ...quiet, reviewer: () => ({ findings: [finding('A', 'high')] }), verifier: yes() },
+    { parallel: dropping },
+  )
+  assert.equal(result.confirmed.length, 1, '2 of 3 still ruled')
+  assert.equal(result.confirmed[0].votes[0].failed, 'the runtime dropped this item and kept no error')
+})
+
 // --------------------------------------------------------------- coverage --
 
 test('a reviewer that is blocked or throws is reported as a coverage gap', async () => {
@@ -721,7 +905,7 @@ test('a reviewer that is blocked or throws is reported as a coverage gap', async
 })
 
 test('why a pair was blocked or a finding went unverified reaches the result and the reporter', async () => {
-  const { result, of, logs } = await run({ modules: ['core', 'app', 'ui'], lenses: ['security'] }, {
+  const { result, of, logs } = await run({ modules: ['core', 'app', 'ui'], lenses: ['security'], votes: 1 }, {
     ...quiet,
     reviewer: (prompt, opts) => {
       if (opts.label === 'security @ core') throw new Error('agent type "x:reviewer" not found')
@@ -789,7 +973,7 @@ test('unanchored findings are counted, and the rest of the reply is kept', async
     finding('No line', 'high', { line: undefined }),
     finding('String line', 'high', { line: '12' }),
   ]
-  const { result, of, logs } = await run({ modules: ['core'], lenses: ['security'] }, {
+  const { result, of, logs } = await run({ modules: ['core'], lenses: ['security'], votes: 1 }, {
     ...quiet,
     reviewer: () => ({ findings: [...unanchored, finding('Leak', 'high')] }),
     verifier: () => ({ refuted: false, reason: 'holds' }),
@@ -1066,7 +1250,7 @@ test('an explicit maxJobs wins over the budget', async () => {
 
 test('exact duplicates from several lenses merge, keeping the most severe copy', async () => {
   const { result, of } = await run(
-    { modules: ['core'], maxVerifyPerJob: 5 },
+    { modules: ['core'], maxVerifyPerJob: 5, votes: 1 },
     {
       ...quiet,
       reviewer: (prompt, opts) => {
@@ -1328,7 +1512,7 @@ test('verifyOnly sends every listed finding to a verifier and runs no planner or
     unverifiedEntry('Unsure', 'low', { line: 30 }),
   ]
   const { result, of, calls } = await run(
-    { today: '2026-10-10', verifyOnly, plan: makePlan() },
+    { today: '2026-10-10', verifyOnly, plan: makePlan(), votes: 1 },
     {
       ...quiet,
       verifier: prompt => /Title: Holds/.test(prompt) ? { refuted: false, reason: 'holds' }
@@ -1644,6 +1828,92 @@ test('the caller manual fits in the skill listing, which cuts entries at about 1
   assert.match(meta.whenToUse, /maxVerifyPerJob/)
 })
 
+test('a continuation keeps the vote counts out and the result keeps every vote', async () => {
+  const first = await firstRun()
+  const confirmed = first.confirmed.find(f => f.line === 107)
+  assert.equal(confirmed.votes.length, 3, 'a high finding got three votes')
+  assert.ok(confirmed.votes.every(v => v.reason === 'holds'))
+  assert.ok(first.continuation.confirmed.every(f => !('votes' in f)))
+  const second = await run({ previous: first.continuation }, dashboard)
+  assert.equal(second.result.ok, true, 'the digest still matches without the votes')
+})
+
+// ------------------------------------------------------------------ yield --
+
+const digestOf = new Function('isObject',
+  SOURCE.match(/^function canonical[\s\S]*?^}$/m)[0] + '\n' +
+  SOURCE.match(/^function digestOf[\s\S]*?^}$/m)[0] + '\nreturn digestOf',
+)(v => v !== null && typeof v === 'object' && !Array.isArray(v))
+
+test('every reviewed pair has a yield entry, including the ones that raised nothing', async () => {
+  const { result, of } = await run({ modules: ['core', 'app'], lenses: ['security', 'concurrency'], maxVerifyPerJob: 5, votes: 1 }, {
+    ...quiet,
+    reviewer: (prompt, opts) => opts.label === 'security @ core'
+      ? { findings: [finding('Real', 'high'), finding('Wrong', 'medium', { line: 20 }), finding('Unsure', 'low', { line: 30 })] }
+      : opts.label === 'concurrency @ app' ? null : { findings: [] },
+    verifier: prompt => /Title: Real/.test(prompt) ? { refuted: false, severity: 'high', reason: 'holds' }
+      : /Title: Wrong/.test(prompt) ? { refuted: true, severity: 'medium', reason: 'no' }
+      : { severity: 'low', reason: 'cannot tell' },
+  })
+  // The blocked pair has no entry: it reviewed nothing.
+  const byPair = (a, b) => a.pair.localeCompare(b.pair)
+  assert.deepEqual(result.coverage.yield.slice().sort(byPair), [
+    { pair: 'concurrency @ core', raw: 0, confirmed: 0, refuted: 0 },
+    { pair: 'security @ app', raw: 0, confirmed: 0, refuted: 0 },
+    { pair: 'security @ core', raw: 3, confirmed: 1, refuted: 1 },
+  ])
+  const prompt = of('reporter')[0].prompt
+  assert.deepEqual(fencedList(prompt, 'One line per lens, in that order:', 'lens yield').sort(),
+    ['concurrency | 1 | 0 | 0 | 0', 'security | 2 | 3 | 1 | 1'])
+  assert.deepEqual(fencedList(prompt, 'Lenses that confirmed nothing; some may still hold unverified findings:',
+    'lenses without a confirmed finding'), ['concurrency'])
+})
+
+test('a continuation carries the yield forward and credits the findings it re-verified', async () => {
+  const first = await firstRun()
+  assert.deepEqual(first.coverage.yield.find(e => e.pair === 'concurrency @ core'),
+    { pair: 'concurrency @ core', raw: 2, confirmed: 1, refuted: 0 })
+  assert.deepEqual(first.continuation.yield, first.coverage.yield)
+  const { result, of } = await run({ previous: first.continuation }, dashboard)
+  assert.equal(result.coverage.yield.length, 15, '12 earlier pairs and the 3 reviewed now')
+  assert.deepEqual(result.coverage.yield.find(e => e.pair === 'concurrency @ core'),
+    { pair: 'concurrency @ core', raw: 2, confirmed: 2, refuted: 0 }, 'the re-checked finding is credited')
+  assert.match(of('reporter')[0].prompt, /over this run and the earlier runs it continues/)
+})
+
+test('a continuation made before yield existed is still accepted', async () => {
+  const { continuation } = await firstRun()
+  const old = { ...continuation, version: '0.3.1', yield: undefined }
+  old.digest = digestOf(old)
+  const { result } = await run({ previous: old }, dashboard)
+  assert.equal(result.ok, true)
+  assert.equal(result.coverage.yield.length, 3, 'only the pairs this run reviewed')
+})
+
+test('a malformed yield in previous stops the run', async () => {
+  const { continuation } = await firstRun()
+  for (const bad of ['x', [{ pair: 'a @ b', raw: 1, confirmed: 2, refuted: 0 }], [{ pair: 'a\n@ b', raw: 0, confirmed: 0, refuted: 0 }]]) {
+    const previous = { ...continuation, yield: bad }
+    previous.digest = digestOf(previous)
+    const { result, calls } = await run({ previous }, dashboard)
+    assert.equal(result.reason, 'bad-args')
+    assert.ok(result.invalid.some(m => m.startsWith('previous.yield')), JSON.stringify(result.invalid))
+    assert.equal(calls.length, 0)
+  }
+})
+
+test('a needs-confirmation stop hands the earlier yield on', async () => {
+  // A continuation owing more pairs than the default cap of 12 stops to ask.
+  const { continuation } = await firstRun()
+  const all = continuation.pairs.concat(continuation.reviewedPairs)
+  const previous = { ...continuation, pairs: all, reviewedPairs: [], confirmed: [], unverified: [] }
+  previous.digest = digestOf(previous)
+  const { result } = await run({ previous }, dashboard)
+  assert.equal(result.reason, 'needs-confirmation')
+  assert.deepEqual(result.votes, { critical: 3, high: 3, medium: 1, low: 1 })
+  assert.deepEqual(result.continuation.yield, continuation.yield)
+})
+
 // ------------------------------------------------------- model and effort --
 
 const findsOne = { ...quiet, reviewer: () => ({ findings: [finding('Bug', 'high')] }) }
@@ -1834,6 +2104,39 @@ test('defect graders pass only on a confirmed finding, not on any mention of the
     assert.match(report(finding, 'None.').replace(/\n/g, '\r\n'), pattern, name + ' CRLF')
     assert.doesNotMatch(report('None.', finding), pattern, name + ' unverified only')
     assert.doesNotMatch(report('None.', 'None.') + '\n' + file, pattern, name + ' after the sections')
+  }
+})
+
+test('decoy graders fail only on a confirmed finding in the decoy, and the scaffold builds each decoy', () => {
+  const graders = readdirSync(GRADERS).filter(f => f.startsWith('no-decoy-')).map(f => f.replace(/\.md$/, ''))
+  assert.ok(graders.length >= 3 && graders.length <= 5, graders.length + ' decoys')
+  const scaffold = readFileSync(new URL('../review-kit/evals/seeded-defects/scaffold.sh', import.meta.url), 'utf8')
+  const report = (findings, unverified) => [
+    '# Code review - fixture', '', '## Summary', '', 'Nothing else.', '',
+    '## Findings', '', findings, '', '## Unverified', '', unverified, '',
+    '## Coverage gaps', '', 'None.', '', '### Lens yield', '', '| lens | pairs |',
+  ].join('\n')
+  for (const name of graders) {
+    const text = readFileSync(new URL(name + '.md', GRADERS), 'utf8')
+    // The eval runner reads `match: not_contains` as "the pattern must not be found".
+    assert.match(text, /^match: not_contains$/m, name)
+    const pattern = graderPattern(name)
+    // `source` escapes the slashes.
+    const [, pkg, base] = pattern.source.match(/fixture\\?\/(\w+)\\?\/(\w+)\\.kt$/)
+    const file = base + '.kt'
+    const path = pkg + '/src/main/kotlin/fixture/' + pkg + '/' + file
+    assert.ok(scaffold.includes(path + " <<'EOF'"), name + ' has its decoy in the scaffold')
+    assert.ok(!DEFECT_GRADERS.some(d => graderPattern(d).source.endsWith(base + '\\.kt')),
+      name + ' names no seeded defect')
+    const finding = '### 1. Not a defect\n\n- **Location:** `' + path + ':9`'
+    assert.match(report(finding, 'None.'), pattern, name + ' confirmed is caught')
+    assert.match(report(finding, 'None.').replace(/\n/g, '\r\n'), pattern, name + ' CRLF')
+    assert.doesNotMatch(report('None.', finding), pattern, name + ' unverified is not a false positive')
+    // Real runs cite a decoy by its bare name as the right way to do it, in a
+    // finding about a seeded defect. That is not a finding in the decoy.
+    const contrast = '### 1. Defect\n\n- **Location:** `server/src/main/kotlin/fixture/server/FileHandler.kt:8`\n\n' +
+      '**Fix:** check the canonical path, as `' + file + ':10` does.'
+    assert.doesNotMatch(report(contrast, 'None.'), pattern, name + ' a contrast is not a false positive')
   }
 })
 

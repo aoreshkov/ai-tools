@@ -1,5 +1,47 @@
 # Changelog
 
+## review-kit 0.4.0
+
+- **Every verdict grades the finding.** The verifier's `severity` is now required: the
+  optional `correctedSeverity` it replaces was set by none of 78 verdicts in a real run,
+  so every reported grade was the reviewer's own. A confirmed finding is ranked by the
+  verified grade, and keeps the reviewer's as `claimedSeverity` where they differ.
+- **Votes.** New argument `votes`: independent verifiers per finding, by the severity the
+  reviewer claimed. The default is 3 for critical and high and 1 for medium and low;
+  `votes: 1` restores one verifier per finding.
+  - Each of several votes takes its own refutation angle (reachability, handled,
+    deliberate). The angle goes in the prompt of the one verifier agent, so the votes
+    share its prompt cache.
+  - The majority of the votes that ruled decides. A failed or undecided vote counts for
+    neither side. Fewer than 2 rulings, or a tie, leaves the finding unverified
+    (`verifier-failed`, or the new `votes-split`), with the cause in
+    `coverage.failureCauses`, so `next` and `previous` can re-verify it.
+  - A confirmed finding's grade is the median of the confirming votes' grades, rounded
+    toward the less severe.
+  - The result keeps every vote under the finding's `votes`; the report gives the tally
+    where a vote was not unanimous. A continuation leaves the votes out.
+  - The worst case grows to `maxJobs * (1 + maxVerifyPerJob * V) + 2` agents, where `V` is
+    the largest vote count: 86 at the defaults, 38 with `votes: 1`. `verification` gains
+    `split`, `votes` and `extraVerifiers`, and the log names both.
+- **Per-pair yield.** `coverage.yield` lists every reviewed pair with the findings it
+  raised, confirmed and refuted. A continuation carries it forward and credits the
+  findings it re-verified. The report ends `## Coverage gaps` with a per-lens table and
+  names the lenses that confirmed nothing.
+- **Seeded-defects eval measures precision.** Four decoys (guarded code that looks like
+  one of the defects) and a `no-decoy-*` grader each, with `match: not_contains`. The case
+  runs three times instead of once, and its prompt verifies up to 8 findings per reviewer.
+  `scripts/seeded-defects-real-run.mjs` applies `match` and prints the defects and decoys
+  confirmed, and its new `--model` option runs every role on one model.
+  - Measured on 2.1.311, three real runs per setting:
+    - Default models: 15 of 15 defects confirmed, and 2 of 12 decoy checks confirmed.
+    - `model: "opus"`: 15 of 15 defects confirmed, and 0 of 12 decoy checks confirmed.
+    - Each run took 96-143 s and cost $1.65-2.34.
+  - Neither decoy confirmed on the default models was the defect it imitates. One was a
+    test gap the verifier itself called "not a bug". The other was real rounding-down in
+    the latency decoy's mean, which is now documented as intended.
+  - Each decoy grader matches the decoy's package path. That excludes findings that cite
+    a decoy by its bare name as the right way to do it, as five of the reports did.
+
 ## review-kit 0.3.1
 
 - `whenToUse` names `maxVerifyPerJob` again; 0.3.0 had dropped it while shortening the

@@ -149,7 +149,8 @@ directly:
 | `lenses`          | all                  | List of lens ids                                         |
 | `maxJobs`         | `12`, or from budget | Cap on module × lens reviewers; see [Before a capped run](#before-a-capped-run) |
 | `verify`          | `true`               | `false` skips verification; findings report as unconfirmed |
-| `maxVerifyPerJob` | `2`                  | Adversarial checks per reviewer; the rest report as unverified |
+| `maxVerifyPerJob` | `2`                  | Findings per reviewer sent to verification; the rest report as unverified |
+| `votes`           | critical and high `3`, others `1` | Independent verifiers per finding, by claimed severity: `1` to `5` for all, or per severity (`{ medium: 3 }`); see [Votes](#votes) |
 | `agents`          | plugin agents        | Per-role agent overrides, e.g. `{ reviewer: "my:reviewer" }` |
 | `agentPrefix`     | `review-kit:`        | Namespace for the default agents; `""` when they live in `.claude/agents/` |
 | `model`           | each agent's own     | Model alias or full ID for every role (`"opus"`), or per role (`{ reviewer: "haiku" }`); see [Choosing models and effort](#choosing-models-and-effort) |
@@ -267,8 +268,8 @@ There are two ways to continue:
   third run still knows what the first one covered.
 
 With `previous`, `pairs` narrows what is reviewed, and `pairs: []` reviews nothing and
-only re-verifies. `maxJobs`, `maxVerifyPerJob`, `model`, `effort`, `today`, `out` and the
-agent overrides work as usual. `previous` supplies the plan, the mode and the diff, so
+only re-verifies. `maxJobs`, `maxVerifyPerJob`, `votes`, `model`, `effort`, `today`, `out`
+and the agent overrides work as usual. `previous` supplies the plan, the mode and the diff, so
 passing `plan`, `carry`, `verifyOnly`, `mode`, `since`, `changed`, `modules`, `lenses` or
 `verify` with it stops the run as `bad-args`. So does a continuation that changed on the
 way: it carries a digest of its own content, because the calling model re-emits it,
@@ -280,9 +281,31 @@ unverified one that its verifier refutes is gone from every section.
 `plan`, `pairs`, `carry` and `verifyOnly` remain the lower-level contract and work as
 before. `previous` is built from them.
 
+#### Votes
+
+A wrong critical or high finding costs the most, so each one gets three independent
+verifiers by default, and a medium or low one gets one. Each of several votes takes its own
+refutation angle, in this order: *reachability* (is there a guard the reviewer missed),
+*handled* (is it caught, retried or defaulted elsewhere) and *deliberate* (is there a design
+reason the code bears out). Past three votes the angles repeat. All votes use the one
+verifier agent with the angle in the prompt, so they share its prompt cache.
+
+The majority of the votes that ruled decides. A vote that failed (a stall, an API error, no
+answer) or that ruled neither way counts for neither side, so a failure never refutes a
+finding. With fewer than 2 rulings, or a tie, the finding is reported as unverified
+(`verifier-failed` or `votes-split`) with the cause in `coverage.failureCauses`, and the
+result's `next` offers to re-verify it. The result keeps every vote, with its angle, ruling,
+grade and reason, under the finding's `votes`; the report gives the tally where a vote was
+not unanimous. A confirmed finding's grade is the median of the confirming votes' grades,
+the less severe of the two middle ones when their count is even.
+
+Pass `votes: 1` for one verifier per finding, as before 0.4.0, or name a severity to change
+only that one, such as `{ medium: 3 }`. The log names the vote counts in force and how many
+verifier agents ran beyond one per finding.
+
 #### Verifying what was left unverified
 
-Each reviewer gets `maxVerifyPerJob` verifier checks (default 2). The findings past that
+Each reviewer sends `maxVerifyPerJob` findings to verification (default 2). The findings past that
 are reported under Unverified, and the result's `next` says so. If you want them checked,
 Claude relaunches with `previous` (adding `pairs: []` when only verification is wanted).
 The lower-level route, `verifyOnly` with the earlier result's `unverified`, `plan` and
@@ -338,10 +361,18 @@ findings it hit. A bad `agents`, `model` or `effort` override therefore says wha
 wrong instead of blocking every pair without a word.
 
 Verification is counted the same way. A verdict that neither confirms nor refutes a
-finding reports it as unverified (`verifier-inconclusive`), not as checked. A finding the
-verifier re-graded keeps the reviewer's grade as `claimedSeverity` next to the verified
-`severity`. An unverified or carried copy of a finding this run settled is counted as
-superseded, apart from the lens-merged duplicates.
+finding reports it as unverified (`verifier-inconclusive`), not as checked, and so do votes
+that split evenly (`votes-split`). Every verdict states the severity the code supports, so
+every confirmed finding carries a verified grade. Where it differs from the reviewer's, the
+reviewer's is kept as `claimedSeverity`, and findings are ranked by the verified grade. An
+unverified or carried copy of a finding this run settled is counted as superseded, apart
+from the lens-merged duplicates.
+
+`coverage.yield` lists, for every pair reviewed, how many findings it raised and how many
+were confirmed and refuted (`{ pair, raw, confirmed, refuted }`). A continuation carries it
+forward and credits the findings it re-verified, so after a chain of runs it covers them
+all. The report ends `## Coverage gaps` with a per-lens table and names the lenses that
+confirmed nothing. Those are the candidates to leave out of the next sweep with `lenses`.
 
 Text from the reviewed repository is fenced and labelled wherever it reaches an agent.
 The reporter, the only role that can write, gets the planner's summary, every module,
@@ -418,9 +449,13 @@ approval, and "don't ask again" has the same effect as the rule.
   versions, `"subagentPromptCacheTtl": "1h"` in your settings does the same job.
 - The reporter only formats verified data, so it skips loading your CLAUDE.md files.
 - Start narrow. One module, or `maxJobs` at 4, tells you what a full sweep will cost.
-- The caps bound the worst case at `maxJobs * (1 + maxVerifyPerJob) + 2` agents — 38 at
-  the defaults — plus one verifier per finding a `previous` left unverified. Typical runs are well under that, since most reviewers return few
-  findings and only findings get verified. Real full runs have used 20–30 agents and
+- The caps bound the worst case at `maxJobs * (1 + maxVerifyPerJob * V) + 2` agents, where
+  `V` is the largest `votes` value: 86 at the defaults (`V` = 3), 38 with `votes: 1`. Add
+  `V` verifiers per finding a `previous` left unverified. Typical runs are well under that,
+  since most reviewers return few findings, only findings get verified, and only critical
+  and high ones get three votes. The token-budget estimate of 25k output tokens per job
+  predates votes, so with a budget set, pass `maxJobs` if verifiers start failing near its
+  end. Real full runs have used 20–30 agents and
   1.5–1.8M subagent tokens, which is past the point (more than 25 agents or 1.5M tokens)
   where Claude Code shows a `Large workflow` warning. On Pro, where the default size
   guideline is `small`, expect to see it; it is advisory, and `maxJobs: 4` stays well
@@ -590,9 +625,15 @@ claude plugin eval ./token-audit --ablation none
 ```
 
 A seeded-defect eval in `review-kit/evals/seeded-defects` measures what a real run
-finds. It builds a two-module Kotlin repo with five known defects, runs one small review,
-and checks that each defect is in the report's confirmed `## Findings` section. The
-prompt allows 8 reviewers and 5 verified findings per reviewer. Three of the defects
+finds, and what it wrongly confirms. It builds a two-module Kotlin repo with five known
+defects and four decoys, runs one small review, and checks that each defect is in the
+report's confirmed `## Findings` section (recall). It also checks that no decoy is there
+(precision). A decoy is code that looks like one of the defects but is guarded: a map
+confined to one thread, a division whose only caller checks for zero, a file path checked
+against its canonical root, and an exception swallowed on purpose, documented and
+counted. Each decoy grader is a `regex` grader with `match: not_contains`. The case runs
+three times, the `plugin eval` default, because one run of a non-deterministic agent
+tells you little. The prompt allows 8 reviewers and 8 verified findings per reviewer. Three of the defects
 share a module and need different lenses to find, and the planner usually adds a third
 module for the build files. At 4 reviewers, real runs reviewed that module through only
 one lens and found 2 or 3 of the 5. At the default verification budget of 2, a found
@@ -604,8 +645,8 @@ claude plugin eval ./review-kit --scaffold --ablation none --allow-tools Workflo
 ```
 
 `--ablation none` skips the no-plugin baseline, which says little about a workflow that
-only exists in the plugin. One run is a sample (see above), so compare changes over
-several runs, not one.
+only exists in the plugin. Each release's changelog records the defects confirmed and the
+decoys confirmed over the three runs, on the default models and with `model: "opus"`.
 
 Eval runs load none of your settings. On Pro, where dynamic workflows are off until
 `/config` turns them on, the workflow therefore cannot start inside the eval. A case can
@@ -625,8 +666,11 @@ node scripts/seeded-defects-real-run.mjs
 It builds the scaffold in a scratch directory and runs the case's prompt through
 `claude -p`. Workflows are turned on with `CLAUDE_CODE_WORKFLOWS=1`, your user settings
 are left out, and the plugin comes from this checkout. It then applies the case's
-graders. Results go to `review-kit/evals/results/real-run-<time>/`, and the script needs
-`bash` for the scaffold. A run takes about 90 seconds and costs about a dollar. Pass
+graders, `match: not_contains` included, and prints the defects and decoys confirmed.
+Results go to `review-kit/evals/results/real-run-<time>/`, and the script needs `bash` for
+the scaffold. It makes one run per call, so call it three times to match the case, and
+three more with `--model opus` for the second setting. A run
+took about 90 seconds and cost about a dollar before decoys and votes; expect more now. Pass
 `--keep` to keep the scratch directory. A session that timed out, crashed or exited
 non-zero fails the run whatever the graders say, and `result.json` then sets
 `defectScoresCount` to false. On a timeout the script ends claude's whole process tree,

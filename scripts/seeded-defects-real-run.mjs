@@ -10,11 +10,12 @@
 // It calls the model: a manual pre-release check, never CI. Node 22 or later,
 // and `bash` (Git Bash on Windows) for the scaffold script.
 //
-//   node scripts/seeded-defects-real-run.mjs [--keep]
+//   node scripts/seeded-defects-real-run.mjs [--keep] [--model <alias or ID>]
 //
 // The trace, the report and the grader results land in
 // review-kit/evals/results/real-run-<time>/ (gitignored). The scratch
-// workspace is deleted afterwards unless --keep is passed.
+// workspace is deleted afterwards unless --keep is passed. --model asks the
+// prompt to run every role on that model, for the release's second setting.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -26,6 +27,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'review-kit')
 const CASE = join(PLUGIN, 'evals', 'seeded-defects')
 const KEEP = process.argv.includes('--keep')
+const MODEL_AT = process.argv.indexOf('--model')
+const MODEL = MODEL_AT === -1 ? undefined : process.argv[MODEL_AT + 1]
+if (MODEL_AT !== -1 && !/^[\w.:@/[\]-]+$/.test(MODEL || '')) {
+  console.error('--model needs a model alias or ID')
+  process.exit(2)
+}
 
 // ------------------------------------------------------------- the case --
 
@@ -44,7 +51,8 @@ function scalar(head, key) {
 }
 
 const promptFile = frontmatter(readFileSync(join(CASE, 'prompt.md'), 'utf8'))
-const PROMPT = promptFile.body.trim()
+const PROMPT = promptFile.body.trim() +
+  (MODEL ? '\n\nRun every role on model "' + MODEL + '".' : '')
 const MAX_TURNS = Number(scalar(promptFile.head, 'max_turns')) || 30
 const TIMEOUT_S = Number(scalar(promptFile.head, 'timeout_seconds')) || 1800
 const KILL_GRACE_MS = 10_000
@@ -57,8 +65,14 @@ const graders = readdirSync(join(CASE, 'graders'))
     const type = scalar(head, 'type')
     const g = { name: f.replace(/\.md$/, ''), type }
     if (type === 'regex') {
-      g.pattern = new RegExp(scalar(head, 'pattern'))
+      g.pattern = new RegExp(scalar(head, 'pattern'), (scalar(head, 'flags') || '') + 'g')
       g.target = scalar(head, 'target') === 'trace' ? 'trace' : head.match(/^\s+path:\s*(.+)$/m)[1].trim()
+      // As plugin eval reads it: absent is "contains", `not_contains` requires
+      // absence, `count:N` exactly N matches.
+      g.match = scalar(head, 'match') || 'contains'
+      if (!/^(contains|not_contains|count:\d+)$/.test(g.match)) {
+        throw new Error(f + ': regex match ' + g.match + ' is not supported by this script')
+      }
     } else if (type === 'file_exists') {
       g.path = scalar(head, 'path')
     } else if (type === 'tool_used') {
@@ -214,8 +228,11 @@ function grade(g) {
   }
   const file = g.target === 'trace' ? null : join(WORK, g.target)
   const text = file ? (existsSync(file) ? readFileSync(file, 'utf8') : '') : traceText
-  const ok = g.pattern.test(text)
-  return { ok, why: (ok ? 'matched in ' : 'no match in ') + (file ? g.target : 'trace') }
+  const found = (text.match(g.pattern) || []).length
+  const ok = g.match === 'not_contains' ? found === 0
+    : g.match.startsWith('count:') ? found === Number(g.match.slice(6))
+      : found > 0
+  return { ok, why: found + ' matches in ' + (file ? g.target : 'trace') + (g.match === 'contains' ? '' : ', want ' + g.match) }
 }
 
 const results = graders.map(g => ({ name: g.name, ...grade(g) }))
@@ -223,6 +240,7 @@ if (existsSync(join(WORK, 'review-report.md'))) copyFileSync(join(WORK, 'review-
 
 const completed = results.find(r => r.name === 'workflow-completed')
 const summary = {
+  model: MODEL || 'each agent\'s own',
   claudeExit: trace.code,
   timedOut: trace.timedOut,
   spawnError: trace.spawnError || undefined,
@@ -235,6 +253,12 @@ const summary = {
   // The same rule as the exit code: a session that did not finish cleanly
   // measures nothing, whatever the graders say
   defectScoresCount: !claudeFailed && !!completed?.ok,
+  // Recall: seeded defects confirmed. Decoys: guarded code confirmed as a
+  // defect, the false positives the no-decoy-* graders catch.
+  defectsFound: results.filter(r => r.name.startsWith('found-') && r.ok).length,
+  defects: results.filter(r => r.name.startsWith('found-')).length,
+  decoysConfirmed: results.filter(r => r.name.startsWith('no-decoy-') && !r.ok).length,
+  decoys: results.filter(r => r.name.startsWith('no-decoy-')).length,
   graders: results,
 }
 writeFileSync(join(OUT, 'result.json'), JSON.stringify(summary, null, 2))
@@ -245,13 +269,15 @@ console.log('claude exit ' + trace.code +
   (trace.spawnError ? ' (could not start: ' + trace.spawnError + ')' : ''))
 if (claudeFailed) console.log('claude did not finish cleanly; see stderr.txt. The grader results below do not count.')
 console.log('Workflow tool available: ' + (summary.workflowToolAvailable ? 'yes' : 'NO'))
-for (const r of results) console.log((r.ok ? 'PASS ' : 'FAIL ') + r.name.padEnd(22) + r.why)
+for (const r of results) console.log((r.ok ? 'PASS ' : 'FAIL ') + r.name.padEnd(26) + r.why)
 console.log('')
 console.log(summary.passed + '/' + summary.total + ' graders passed in ' + seconds + 's' +
   (summary.costUsd !== undefined ? ', $' + summary.costUsd.toFixed(2) : '') + '.')
+console.log('Defects confirmed: ' + summary.defectsFound + '/' + summary.defects +
+  '. Decoys confirmed: ' + summary.decoysConfirmed + '/' + summary.decoys + '.')
 if (!summary.defectScoresCount) {
   console.log((claudeFailed ? 'claude did not finish cleanly' : 'workflow-completed failed') +
-    ', so the found-* results do not measure the workflow.')
+    ', so the found-* and no-decoy-* results do not measure the workflow.')
 }
 console.log('results: ' + OUT)
 
