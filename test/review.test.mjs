@@ -1640,6 +1640,8 @@ test('the caller manual fits in the skill listing, which cuts entries at about 1
   const entry = meta.description + ' - ' + meta.whenToUse
   assert.ok(entry.length < 1400, entry.length + ' chars')
   assert.match(meta.whenToUse, /`next`/)
+  // A real run asked to "verify up to 5 findings per reviewer" launched without it.
+  assert.match(meta.whenToUse, /maxVerifyPerJob/)
 })
 
 // ------------------------------------------------------- model and effort --

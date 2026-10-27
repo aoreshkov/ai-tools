@@ -249,11 +249,16 @@ There are two ways to continue:
   with `resumeFromRunId` and a higher `maxJobs`. A resume replays agents in start order:
   completed agents return their saved results until the first agent whose prompt
   changed, and that agent and every agent that starts after it run again. Planner and
-  reviewer prompts never contain `maxJobs` or the budget, and every reviewer starts
-  before any verifier, so the planner and the reviewers that already ran should come back from
-  the cache, and the verifiers and the reporter run again. This does not verify findings
-  that were left unverified. A session you left can still do this after
-  `claude --resume`.
+  reviewer prompts never contain `maxJobs` or the budget, so the planner and the reviewers
+  that already ran come back from the cache. The first new reviewer starts before any
+  verifier, so every verifier and the reporter run again, unchanged prompts included.
+  Measured on 2.1.311 by raising `maxJobs` from 2 to 4 on a two-module repository: the
+  planner and both earlier reviewers came back cached; the two new reviewers, all four
+  verifiers (three of them re-checks of the first run's findings) and the reporter ran.
+  This does not verify findings that were left unverified. A session you left can still
+  do this after `claude --resume`. The relaunch names the run's script file, not the
+  workflow, so the `Workflow(review-kit:review)` rule (see Permissions) does not approve
+  it.
 - **From any session**, with `previous`: Claude passes the result's `continuation`
   unchanged. In one run, the planner is skipped, the left pairs are reviewed, the
   unverified findings go to verifiers next to that review, and the confirmed findings are
@@ -388,6 +393,11 @@ the settings file lives. Adjust it if you pass `out`, for example
 were checked in a `claude -p --permission-mode default` run on 2.1.281. Without the
 `Workflow` rule, `-p` refuses to launch the workflow, and without the `Edit` rule, the
 run returns its findings with `report: null`.
+
+A same-session resume (`resumeFromRunId`) relaunches by the run's script path, which that
+rule does not match. In a `-p` run on 2.1.311 the relaunch was denied ("Review dynamic
+workflow before running"), and Claude started a fresh run by name instead. Continuing with
+`previous` launches by name, so the rule covers it.
 
 Project rules apply only once the workspace is trusted, so open it interactively once
 before relying on them in `-p` runs. In an interactive session the first launch asks for

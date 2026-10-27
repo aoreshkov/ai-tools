@@ -1,5 +1,18 @@
 # Changelog
 
+## review-kit 0.3.1
+
+- `whenToUse` names `maxVerifyPerJob` again; 0.3.0 had dropped it while shortening the
+  listing entry. In a real run asked to "verify up to 5 findings per reviewer", Claude
+  launched without it, found it in the script, stopped the run and started over. A test
+  keeps it named.
+- README, Continuing a run: the cache behaviour of a same-session resume is now measured
+  (2.1.311): raising `maxJobs` from 2 to 4 brought the planner and both earlier reviewers
+  back from the cache, and ran every verifier and the reporter again.
+- README, Permissions: a same-session resume relaunches by script path, which the
+  `Workflow(review-kit:review)` rule does not approve; in `-p` it is denied. `previous`
+  launches by name.
+
 ## review-kit 0.3.0
 
 - **Version collision.** A pre-release build had used the version strings 0.2.x, and
