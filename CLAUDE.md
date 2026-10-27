@@ -108,6 +108,9 @@ claude plugin test ./token-meter
 
 - Bump `version` in the plugin's `.claude-plugin/plugin.json` on every user-visible
   change, and add a `CHANGELOG.md` entry. Installed copies do not update otherwise.
+  Never reuse a version string, including ones used before the first public commit:
+  the cache directory is named after it, and a stale one can survive an install.
+- review-kit: `SCRIPT_VERSION` in `review.js` moves with `plugin.json` (a test checks).
 - Tag releases `review-kit-vX.Y.Z`, `token-audit-vX.Y.Z` or `token-meter-vX.Y.Z` with notes from
   the changelog.
 - A remote entry moves only to a released tag: set `ref` to the tag and `sha` to its
