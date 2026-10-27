@@ -1,5 +1,43 @@
 # Changelog
 
+## review-kit 0.5.0
+
+- **Cost estimate before a capped run.** A `needs-confirmation` stop now carries
+  `estimate`, with the likely agents and tokens (`agents`, `tokens`) and the worst case
+  the caps allow (`mostAgents`, `mostTokens`). It covers both the pairs in `wouldRun` and
+  all applicable pairs. The log states it, and `next` tells Claude to show it when it
+  asks.
+  - The figures are per-agent averages from a 62-pair review of a mid-size Kotlin
+    repository on 2.1.311: 43k tokens per reviewer, 1.3 findings per reviewer with about
+    1 in 10 claimed critical or high, 26k tokens per verifier, and 50k for the reporter.
+  - Findings a `previous` left unverified add their votes to both choices.
+  - Tokens are subagent tokens as `/workflows` counts them, the unit of the `Large
+    workflow` warning. At the defaults, 12 pairs come to about 32 agents and 1.1M tokens.
+- **Token-budget sizing from measured output.** With a turn budget and no `maxJobs`, a
+  module × lens job was costed at 25k output tokens. It is now costed at its worst case:
+  4k for the reviewer plus 2k per verifier it can start (`maxVerifyPerJob` × the largest
+  `votes` value). The planner and reporter get 25k between them.
+  - That is 16k per job at the defaults and 8k with `votes: 1`, so `+500k` runs 29 jobs
+    instead of 19.
+  - The averages are measured, rounded up: 3.5k per reviewer and 1.4–1.9k per verifier.
+    The old figure predated votes and ignored `maxVerifyPerJob`.
+- **Shorter listing entry.** `whenToUse` drops each argument's shape, which the
+  `bad-args` messages already explain, and names `/code-review` for a single branch or PR.
+  - `description` + " - " + `whenToUse` is 932 characters, down from 1,366 in 0.4.0 and
+    1,986 in 0.2.2. A test keeps it under 993, half of 0.2.2's.
+  - Always-on cost, measured on 2.1.312: `claude plugin details review-kit` reports ~152
+    tokens, unchanged, because it counts the four agents and omits the workflow. `/context`
+    counts the agents at 169 tokens. It counts the workflow's entry for the installed
+    0.3.1 (1,303 characters) at ~440–460 tokens, so the entry costs about three times
+    what `plugin details` reports. At the same ratio, 0.5.0's entry is about 320 tokens.
+- README: a new "When to use which" section sets review-kit against the built-in
+  `/code-review`. Before a capped run documents `estimate`, the token-budget section gives
+  the new sizing, and Cost notes add measured figures:
+  - The 62-pair all-Opus run: 144 agents and about 5.25M tokens, about 85k per pair.
+  - Reviewer model advice from the 0.4.0 seeded-defects runs: Opus reviewers matched the
+    defaults on recall and confirmed no decoy. Use `model: { reviewer: "opus" }` for a
+    release gate, and the defaults for routine sweeps.
+
 ## review-kit 0.4.0
 
 - **Every verdict grades the finding.** The verifier's `severity` is now required: the

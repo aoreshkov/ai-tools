@@ -1218,10 +1218,20 @@ function budgetOf(total) {
 }
 
 test('a token budget sizes maxJobs when maxJobs is not given', async () => {
-  // (200k - 20k fixed) / 25k per job = 7
-  const { result, logs } = await run({}, quiet, { budget: budgetOf(200000) })
-  assert.equal(result.coverage.planned - result.coverage.capped, 7)
-  assert.ok(logs.some(l => l.includes('maxJobs set to 7')))
+  // (200k - 25k fixed) / (4k reviewer + 2 findings x 3 votes x 2k verifier) = 10
+  const { result, logs } = await run({}, { ...quiet, planner: () => widePlan() }, { budget: budgetOf(200000) })
+  assert.equal(result.coverage.planned - result.coverage.capped, 10)
+  assert.ok(logs.some(l => l.includes('maxJobs set to 10') && l.includes('up to 6 verifiers')))
+})
+
+test('the budget per job follows maxVerifyPerJob, votes and verify', async () => {
+  const capOf = async (args) => {
+    const { logs } = await run(args, quiet, { budget: budgetOf(200000) })
+    return Number(logs.find(l => l.includes('maxJobs set to')).match(/maxJobs set to (\d+)/)[1])
+  }
+  assert.equal(await capOf({ votes: 1 }), 21, '(200k - 25k) / (4k + 2 x 1 x 2k)')
+  assert.equal(await capOf({ maxVerifyPerJob: 4 }), 6, '(200k - 25k) / (4k + 4 x 3 x 2k)')
+  assert.equal(await capOf({ verify: false }), 43, '(200k - 25k) / 4k')
 })
 
 test('maxJobs comes from budget.total, never remaining(), so a resume derives the same cap', async () => {
@@ -1229,7 +1239,7 @@ test('maxJobs comes from budget.total, never remaining(), so a resume derives th
   const fresh = await run({}, quiet, { budget: budgetOf(200000) })
   const resumed = await run({}, quiet,
     { budget: { total: 200000, spent: () => 150000, remaining: () => 50000 } })
-  assert.equal(resumed.result.coverage.planned - resumed.result.coverage.capped, 7)
+  assert.equal(resumed.result.coverage.planned - resumed.result.coverage.capped, 7, 'all 7 fit under 10')
   assert.deepEqual(resumed.of('reviewer').map(c => c.opts.label), fresh.of('reviewer').map(c => c.opts.label))
   const capLine = logs => logs.find(l => l.includes('maxJobs set to'))
   assert.equal(capLine(resumed.logs), capLine(fresh.logs))
@@ -1429,6 +1439,40 @@ test('a default cap that would skip pairs stops after planning so the caller can
   assert.ok(logs.some(l => l.includes('Stopped before review') && l.includes(result.wouldSkip[0])))
 })
 
+test('a confirmation stop estimates each choice, and next tells the caller to show it', async () => {
+  const { result, logs } = await run({ today: '2026-10-28' }, { ...quiet, planner: () => widePlan() })
+  // 1.3 findings per reviewer at 1.2 votes each (10% critical or high at 3, the rest at 1).
+  // 12 jobs: 19 verifiers; at most 12 x 2 x 3 = 72. Tokens: 43k, 26k and 50k for the reporter.
+  assert.deepEqual(result.estimate.wouldRun, { agents: 32, tokens: 1060000, mostAgents: 85, mostTokens: 2440000 })
+  assert.deepEqual(result.estimate.all, { agents: 39, tokens: 1290000, mostAgents: 106, mostTokens: 3040000 })
+  assert.match(result.estimate.basis, /Rough/)
+  assert.ok(result.next.includes('run all 15 (about 39 agents and 1.3M tokens, at most 106 and 3.0M)'))
+  assert.ok(result.next.includes('only the 12 in wouldRun (about 32 agents and 1.1M tokens, at most 85 and 2.4M)'))
+  assert.match(result.next, /show them those estimates as estimates/)
+  assert.ok(logs.some(l => l.startsWith('Estimate: the 12 in wouldRun take about 32 agents')))
+})
+
+test('the estimate follows votes, verify and the findings a previous left unverified', async () => {
+  const handlers = { ...quiet, planner: () => widePlan() }
+  const one = (await run({ votes: 1 }, handlers)).result.estimate.wouldRun
+  assert.deepEqual(one, { agents: 29, tokens: 980000, mostAgents: 37, mostTokens: 1190000 })
+  const none = (await run({ verify: false }, handlers)).result.estimate.wouldRun
+  assert.deepEqual(none, { agents: 13, tokens: 570000, mostAgents: 13, mostTokens: 570000 })
+
+  // A continuation owing every pair, with and without its unverified medium finding.
+  const { continuation } = await firstRun()
+  const owing = unverified => {
+    const p = { ...continuation, pairs: continuation.pairs.concat(continuation.reviewedPairs), reviewedPairs: [], unverified }
+    p.digest = digestOf(p)
+    return p
+  }
+  const clean = (await run({ previous: owing([]) }, dashboard)).result.estimate.wouldRun
+  const owed = (await run({ previous: owing(continuation.unverified) }, dashboard)).result.estimate.wouldRun
+  assert.equal(continuation.unverified.length, 1)
+  assert.equal(owed.agents - clean.agents, 1, 'a medium finding gets one vote')
+  assert.equal(owed.mostAgents - clean.mostAgents, 1)
+})
+
 test('the relaunch after a confirmation stop reuses the plan and runs what was chosen', async () => {
   const handlers = { ...quiet, planner: () => widePlan() }
   const stop = (await run({ today: '2026-10-10' }, handlers)).result
@@ -1490,7 +1534,7 @@ test('an explicit maxJobs or a token budget never stops to ask', async () => {
   assert.equal(explicit.result.coverage.capped, 3)
   const budgeted = await run({}, handlers, { budget: { total: 200000, spent: () => 0, remaining: () => 200000 } })
   assert.equal(budgeted.result.ok, true)
-  assert.equal(budgeted.of('reviewer').length, 7)
+  assert.equal(budgeted.of('reviewer').length, 10)
 })
 
 test('a run that fits under the default cap does not stop', async () => {
@@ -1822,7 +1866,9 @@ test('an incremental continuation keeps its diff, and the caller cannot pass ano
 test('the caller manual fits in the skill listing, which cuts entries at about 1,536 chars', () => {
   const meta = new Function('return ' + SOURCE.match(/^export const meta = (\{[\s\S]*?\n\})/m)[1])()
   const entry = meta.description + ' - ' + meta.whenToUse
-  assert.ok(entry.length < 1400, entry.length + ' chars')
+  // Under half of the 1,986 chars of 0.2.2, which the listing cut mid-word.
+  assert.ok(entry.length < 993, entry.length + ' chars')
+  assert.match(meta.whenToUse, /\/code-review/, 'a branch or PR review goes to the built-in command')
   assert.match(meta.whenToUse, /`next`/)
   // A real run asked to "verify up to 5 findings per reviewer" launched without it.
   assert.match(meta.whenToUse, /maxVerifyPerJob/)
