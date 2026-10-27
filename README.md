@@ -95,11 +95,33 @@ different set from the same plugin.
 
 ### Requirements
 
-- Claude Code with [dynamic workflows](https://code.claude.com/docs/en/workflows) turned
-  on (on Pro, the Dynamic workflows row in `/config`). Developed and tested on 2.1.281;
-  the agents use `omitClaudeMd` (v2.1.271+) and a per-agent cache TTL (v2.1.248+).
-- For a run to wait out a usage limit instead of failing: v2.1.271 or later, in an
-  interactive session signed in with a claude.ai subscription.
+- Claude Code 2.1.305 or later, with [dynamic workflows](https://code.claude.com/docs/en/workflows)
+  turned on (on Pro, the Dynamic workflows row in `/config`). Tested on 2.1.311. 2.1.305
+  is the first release that resumes a workflow whose pipeline items run more than one
+  agent reliably, which [continuing a run](#continuing-a-run) relies on. The agents also
+  use `omitClaudeMd` (v2.1.271+) and a per-agent cache TTL (v2.1.248+).
+- For a run to wait out a usage limit instead of failing: an interactive session signed
+  in with a claude.ai subscription.
+- Keep the machine awake during a long run. A sleeping host (Windows Modern Standby,
+  macOS sleep) pauses the session. On wake, the stall detector restarts the agent that was
+  running, and its log line counts the whole sleep as stall time.
+- Point `out` at a path the reviewed repository ignores, such as its private `docs/`
+  folder. Otherwise add `review-report*.md` to that repository's `.gitignore`. The default
+  `review-report.md` lands at the repository root, and every run logs where the report
+  goes.
+
+Every result, stopped or finished, carries `version`, the review-kit version that ran,
+and the log's first line names it too. If the workflow refuses an argument this README
+lists, compare that `version` with the one you installed. Claude Code names a plugin's
+cache directory after its version, so a stale directory with the same version can
+survive an install. To recover:
+
+1. `claude plugin uninstall review-kit@aoreshkov-ai-tools`
+2. Delete `~/.claude/plugins/cache/aoreshkov-ai-tools/review-kit/<version>/`.
+3. `claude plugin install review-kit@aoreshkov-ai-tools`, then start a new session.
+
+Before 0.3.0, a pre-release build had used the same version strings, so check for this
+if you installed review-kit 0.2.x.
 
 To try it from a local checkout without installing:
 
@@ -122,7 +144,7 @@ directly:
 | `since`           | `HEAD~1`             | Incremental only: baseline git ref                       |
 | `changed`         | —                    | Incremental only, required: repo-relative changed paths  |
 | `today`           | —                    | Date string; workflow scripts cannot call `new Date()`   |
-| `out`             | `review-report.md`   | Report path, repo-relative — add it to `.gitignore`      |
+| `out`             | `review-report.md`   | Report path, repo-relative; put it where the repo ignores it, e.g. `docs/` |
 | `modules`         | all                  | List of module names, for a narrow run                   |
 | `lenses`          | all                  | List of lens ids                                         |
 | `maxJobs`         | `12`, or from budget | Cap on module × lens reviewers; see [Before a capped run](#before-a-capped-run) |
@@ -136,6 +158,7 @@ directly:
 | `pairs`           | —                    | `"lens @ module"` labels to run, e.g. a previous result's `coverage.cappedPairs` |
 | `carry`           | —                    | A previous result's `confirmed`; reported as carried, not re-verified |
 | `verifyOnly`      | —                    | A previous result's `unverified`; verifies only those, no review |
+| `previous`        | —                    | A previous result's `continuation`; continues that run in one step, see [Continuing a run](#continuing-a-run) |
 
 Examples:
 
@@ -206,7 +229,8 @@ apply than the default cap of 12 runs, and you gave neither `maxJobs` nor a toke
 the run stops after planning, before any reviewer starts. It returns
 `reason: "needs-confirmation"` with the pairs it would run (`wouldRun`) and skip
 (`wouldSkip`), and Claude asks you: run them all, keep the cap, or pick pairs. It then
-relaunches with that result's `plan`, so the planner does not run again.
+relaunches with that result's `continuation` as `previous`, so the planner does not run
+again. The result's `next` field tells Claude how.
 
 Passing `maxJobs` yourself, or setting a token budget, is that choice made up front: the
 run never stops to ask. Do that in non-interactive runs (`claude -p`), where nobody can
@@ -214,27 +238,53 @@ answer.
 
 #### Continuing a run
 
-Every result returns the `plan` it reviewed. To finish a capped run, ask Claude to rerun
-the skipped pairs; it passes the previous result's `plan`, its `coverage.cappedPairs` as
-`pairs`, and its `confirmed` as `carry`. The planner does not run again, so module names
-and reviewer prompts match the first run, only the listed pairs are reviewed, and the new
-report keeps the earlier confirmed findings, marked as carried from an earlier run. A
-carried finding that this run checks again is settled by this run's verdict.
+A run that leaves work behind (pairs capped by `maxJobs` or blocked, findings past the
+verification budget) returns two extra fields. `continuation` is what a later run needs,
+and `next` tells Claude what to ask you and how to relaunch. Claude follows `next`, so
+you only answer the question.
 
-Planner prompts never contain `maxJobs` or the budget, so resuming a run with a higher
-cap reuses the cached plan instead of replanning from scratch.
+There are two ways to continue:
+
+- **In the session that ran it**, for capped pairs: Claude relaunches the same workflow
+  with `resumeFromRunId` and a higher `maxJobs`. A resume replays agents in start order:
+  completed agents return their saved results until the first agent whose prompt
+  changed, and that agent and every agent that starts after it run again. Planner and
+  reviewer prompts never contain `maxJobs` or the budget, and every reviewer starts
+  before any verifier, so the planner and the reviewers that already ran should come back from
+  the cache, and the verifiers and the reporter run again. This does not verify findings
+  that were left unverified. A session you left can still do this after
+  `claude --resume`.
+- **From any session**, with `previous`: Claude passes the result's `continuation`
+  unchanged. In one run, the planner is skipped, the left pairs are reviewed, the
+  unverified findings go to verifiers next to that review, and the confirmed findings are
+  carried. The report states the combined coverage, for example "coverage: 62 of 62 (12 in
+  an earlier run)", and lists which pairs earlier runs reviewed. Continuations chain: a
+  third run still knows what the first one covered.
+
+With `previous`, `pairs` narrows what is reviewed, and `pairs: []` reviews nothing and
+only re-verifies. `maxJobs`, `maxVerifyPerJob`, `model`, `effort`, `today`, `out` and the
+agent overrides work as usual. `previous` supplies the plan, the mode and the diff, so
+passing `plan`, `carry`, `verifyOnly`, `mode`, `since`, `changed`, `modules`, `lenses` or
+`verify` with it stops the run as `bad-args`. So does a continuation that changed on the
+way: it carries a digest of its own content, because the calling model re-emits it,
+sometimes tens of kilobytes, and a mis-copy must not review something else.
+
+A carried finding that this run checks again is settled by this run's verdict, and an
+unverified one that its verifier refutes is gone from every section.
+
+`plan`, `pairs`, `carry` and `verifyOnly` remain the lower-level contract and work as
+before. `previous` is built from them.
 
 #### Verifying what was left unverified
 
-Each reviewer gets `maxVerifyPerJob` verifier checks (default 2); the findings past that
-are reported under Unverified. When a run ends with unverified findings, Claude asks
-whether to verify them. If you say yes, it relaunches with the previous result's
-`unverified` as `verifyOnly`, its `plan` and its `confirmed` as `carry`. No planner or
-reviewer runs: every listed finding goes to a verifier, and the new report holds the
-newly confirmed findings next to the carried ones. A `verifyOnly` run reviews nothing, so
-it refuses the arguments that shape a review (`mode`, `modules`, `lenses`, `pairs`,
-`maxJobs`, `verify`, `maxVerifyPerJob`, `since`, `changed`). Its report does not repeat
-the earlier run's coverage gaps.
+Each reviewer gets `maxVerifyPerJob` verifier checks (default 2). The findings past that
+are reported under Unverified, and the result's `next` says so. If you want them checked,
+Claude relaunches with `previous` (adding `pairs: []` when only verification is wanted).
+The lower-level route, `verifyOnly` with the earlier result's `unverified`, `plan` and
+`confirmed` as `carry`, still works. A `verifyOnly` run reviews nothing, so it refuses the
+arguments that shape a review (`mode`, `modules`, `lenses`, `pairs`, `maxJobs`, `verify`,
+`maxVerifyPerJob`, `since`, `changed`), and its report does not repeat the earlier run's
+coverage gaps.
 
 #### Token budget
 
@@ -333,7 +383,8 @@ allow every workflow with a bare `Workflow`. Claude often starts it through the
 run with only the `Workflow` rule had that skill call denied. The session then reviewed
 the code by calling the agents itself, without the workflow's caps or coverage counts.
 The leading `/` in `Edit(/review-report.md)` anchors the path at the project root, where
-the settings file lives. Adjust it if you pass `out`. The `Workflow` and `Edit` rules
+the settings file lives. Adjust it if you pass `out`, for example
+`Edit(/docs/*-code-review.md)`. The `Workflow` and `Edit` rules
 were checked in a `claude -p --permission-mode default` run on 2.1.281. Without the
 `Workflow` rule, `-p` refuses to launch the workflow, and without the `Edit` rule, the
 run returns its findings with `report: null`.
@@ -358,7 +409,7 @@ approval, and "don't ask again" has the same effect as the rule.
 - The reporter only formats verified data, so it skips loading your CLAUDE.md files.
 - Start narrow. One module, or `maxJobs` at 4, tells you what a full sweep will cost.
 - The caps bound the worst case at `maxJobs * (1 + maxVerifyPerJob) + 2` agents — 38 at
-  the defaults. Typical runs are well under that, since most reviewers return few
+  the defaults — plus one verifier per finding a `previous` left unverified. Typical runs are well under that, since most reviewers return few
   findings and only findings get verified. Real full runs have used 20–30 agents and
   1.5–1.8M subagent tokens, which is past the point (more than 25 agents or 1.5M tokens)
   where Claude Code shows a `Large workflow` warning. On Pro, where the default size

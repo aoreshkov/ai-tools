@@ -32,6 +32,11 @@ findings are the same defect when the same change would fix both - not only when
 `file:line` matches exactly. Merge those: keep the clearest title, the highest severity,
 the union of the lenses that saw it, and the best-argued `why` and `fix`.
 
+The confirmed findings arrive in candidate groups: the runner put findings that cite the
+same file within a few lines of each other together. A group is a hint, not a verdict.
+Merge only what the same change would fix, keep apart what it would not, and merge across
+groups when two findings in different places are one defect.
+
 ## Rank
 
 Order by severity, then by blast radius (how much breaks, how many users), then by how
@@ -45,7 +50,8 @@ these headings, in this order, so tools that read the report can find each secti
 
 - `# Code review - <repo name>`, then one line giving the date, the mode, and what was
   covered (modules x lenses reviewed), plus the models and effort when the prompt has a
-  `Models:` or `Effort:` line.
+  `Models:` or `Effort:` line, and the `Script:` version. When the prompt gives the coverage
+  wording for the header line, use it as given.
 - `## Summary` - a short paragraph naming the most important thing found, or stating
   plainly that nothing significant was found. No padding.
 - `## Findings` - the confirmed findings only, one `###` per finding, ranked, each
@@ -59,7 +65,8 @@ these headings, in this order, so tools that read the report can find each secti
   selected, from the numbers given in the prompt, and the cause of each failure the prompt
   lists. State them plainly; a reader must not mistake this report for full coverage when
   it is not. Pairs not selected in a run that continues an earlier one are named as such,
-  not as gaps of that earlier run, when the prompt says so. Never say where coverage you
+  not as gaps of that earlier run, when the prompt says so. Pairs the prompt lists as
+  reviewed in an earlier run are covered: say so in one line, never list them as gaps. Never say where coverage you
   were not given is recorded.
 
 Keep every section heading even when it is empty, and say in one line that it is empty.

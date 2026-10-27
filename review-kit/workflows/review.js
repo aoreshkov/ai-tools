@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Multi-lens code review: plan the lenses that fit this repo, fan out read-only reviewers per module x lens, adversarially verify every finding, and write one ranked report',
-  whenToUse: 'Reviewing a whole repository, or what changed since a git ref, from several points of view at once. Always pass args.today as YYYY-MM-DD. For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one), and bound cost with maxJobs (an integer). Pass model or effort only when the user asks for one. model is a model alias or full model ID ("opus", "claude-sonnet-5-5"); effort is low, medium, high, xhigh or max. Each takes one value for every role, or an object by role (planner, reviewer, verifier, reporter), e.g. model { reviewer: "haiku" } or effort { verifier: "max" }; keep both the same on every relaunch. Findings past maxVerifyPerJob (an integer, default 2) per reviewer are reported unverified, so raise it when asked to verify more. To continue a capped or partial run, pass from the previous result: plan as plan, coverage.cappedPairs as pairs, and confirmed as carry. A result with reason "needs-confirmation" means more pairs apply than the default cap runs and nothing was reviewed yet: ask the user whether to run all of them (maxJobs: applicable), only the capped set (maxJobs: the result\'s maxJobs), or chosen pairs (pairs, from wouldRun and wouldSkip), then relaunch with the result\'s plan as plan so the planner does not run again; a caller that cannot ask passes maxJobs up front. When a finished result has unverified findings, ask the user whether to verify them, and if so relaunch with verifyOnly as that result\'s unverified, plan as plan, and confirmed as carry: only verifiers and the reporter run. Pass args as an object; unknown keys and values of the wrong type stop the run.',
+  whenToUse: 'Reviewing a whole repository, many modules, or a large diff from several points of view at once. Pass args as an object; unknown keys and values of the wrong type stop the run. Always pass today as YYYY-MM-DD. Pass out inside the repository\'s private, ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one) and bound cost with maxJobs (an integer). Pass model or effort only when the user asks for one: a model alias or full ID ("opus") and an effort level (low to max), each one value for every role or an object by role (planner, reviewer, verifier, reporter); keep both the same on every relaunch. When a result has a `next` field, follow it: it says what to ask the user and how to relaunch.',
   phases: [
     { title: 'Plan', detail: 'one agent maps the modules and picks the lenses that apply' },
     { title: 'Review', detail: 'one read-only reviewer per module x lens pair' },
@@ -60,10 +60,28 @@ export const meta = {
 //                    report holds them with `carry`. Takes only today, out,
 //                    agentPrefix, agents, model, effort, plan and carry
 //                    besides.
+//   previous         a previous result's `continuation`, passed unchanged. It
+//                    supplies the plan, mode, pairs to run (unless `pairs` is
+//                    passed; [] reviews nothing), the confirmed findings to
+//                    carry, the unverified ones to re-verify in this run, and
+//                    the pairs earlier runs reviewed, so the report states the
+//                    combined coverage. Its digest must match. It cannot be
+//                    combined with plan, carry, verifyOnly, mode, since,
+//                    changed, modules, lenses or verify.
 //
 // The two caps bound the worst case at maxJobs * (1 + maxVerifyPerJob) + 2
-// agents. They default low on purpose: a review that costs more than reading
-// the diff yourself does not get run twice. Raise them for a full sweep.
+// agents, plus one verifier per finding a `previous` left unverified. They
+// default low on purpose: a review that costs more than reading the diff
+// yourself does not get run twice. Raise them for a full sweep.
+//
+// Every result carries `version`, the code that ran. A result that can be
+// continued carries `continuation` and `next`, the caller's instructions for
+// the relaunch; they live there rather than in meta.whenToUse, which every
+// session pays for.
+
+// Equal to review-kit/.claude-plugin/plugin.json `version` (a test checks).
+// Not in meta, which must stay a pure literal.
+const SCRIPT_VERSION = '0.3.0'
 
 function posInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
@@ -111,8 +129,12 @@ function underPath(file, root) {
 const KNOWN_ARGS = [
   'mode', 'since', 'changed', 'today', 'out', 'modules', 'lenses', 'maxJobs',
   'verify', 'maxVerifyPerJob', 'agentPrefix', 'agents', 'model', 'effort', 'plan', 'pairs', 'carry',
-  'verifyOnly',
+  'verifyOnly', 'previous',
 ]
+
+// `previous` supplies each of these itself. Taking one from the caller as well
+// would be a silent choice between two sources, so the pair stops the run.
+const PREVIOUS_SUPPLIES = ['plan', 'carry', 'verifyOnly', 'mode', 'since', 'changed', 'modules', 'lenses', 'verify']
 
 // A verifyOnly run reviews nothing, so every argument that shapes a review
 // would be ignored there - and an ignored argument is a silent one.
@@ -189,6 +211,60 @@ function isAnchored(f) {
     typeof f.file === 'string' && f.file !== '' && !hasControl(f.file) && Number.isInteger(f.line)
 }
 
+// A continuation travels through the calling model, which writes it back out
+// as tool input: tens of kilobytes it can mis-copy. The digest makes a mangled
+// copy stop the run instead of reviewing something else. It is plain string
+// hashing over a key-sorted serialisation, with no clock or randomness, so a
+// resume computes the same value. Undefined keys are skipped, as JSON drops
+// them on the way to the caller.
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']'
+  if (isObject(value)) {
+    return '{' + Object.keys(value).sort().filter(k => value[k] !== undefined)
+      .map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}'
+  }
+  return value === undefined ? 'null' : JSON.stringify(value)
+}
+
+// Two 32-bit FNV-1a lanes with different primes: a copy check, not security.
+function digestOf(continuation) {
+  const text = canonical({ ...continuation, digest: undefined })
+  let a = 0x811c9dc5
+  let b = 0x050c5d1f
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    a = Math.imul(a ^ c, 0x01000193)
+    b = Math.imul(b ^ c, 0x5bd1e995)
+    b ^= b >>> 15
+  }
+  const hex = n => ('0000000' + (n >>> 0).toString(16)).slice(-8)
+  return hex(a) + hex(b)
+}
+
+// The shape a continuation must have before its digest is worth checking.
+function continuationProblems(p) {
+  if (!isObject(p)) return ['previous must be the `continuation` object from an earlier result']
+  const bad = []
+  if (typeof p.digest !== 'string' || !p.digest) bad.push('previous has no digest; pass an earlier result\'s `continuation` unchanged')
+  if (p.mode !== 'full' && p.mode !== 'incremental') bad.push('previous.mode must be "full" or "incremental"')
+  if (p.mode === 'incremental') {
+    if (typeof p.since !== 'string' || !p.since) bad.push('previous.since must be a non-empty string')
+    if (!isNameList(p.changed) || !p.changed.length) bad.push('previous.changed must be a non-empty list of paths')
+  }
+  if (p.plan !== null && !isObject(p.plan)) bad.push('previous.plan must be an object or null')
+  for (const key of ['pairs', 'reviewedPairs']) {
+    if (!isNameList(p[key])) bad.push('previous.' + key + ' must be a list of "lens @ module" labels')
+  }
+  for (const key of ['confirmed', 'unverified']) {
+    if (!Array.isArray(p[key])) {
+      bad.push('previous.' + key + ' must be a list of findings')
+    } else if (p[key].some(f => !isAnchored(f))) {
+      bad.push('previous.' + key + ' has entries without a title, file or integer line')
+    }
+  }
+  return bad
+}
+
 // A known key with a value of the wrong shape is as dangerous as a misspelled
 // one: `modules: "core"` or `mode: "incrmental"` would otherwise fall back to
 // the default and run the most expensive review there is. A present key is
@@ -263,17 +339,47 @@ function invalidArgs(a) {
       bad.push(key + ' does not apply to a verifyOnly run, which reviews nothing; leave it out')
     }
   }
+  if (has('previous')) {
+    const shape = continuationProblems(a.previous)
+    if (shape.length) {
+      bad.push(...shape)
+    } else if (digestOf(a.previous) !== a.previous.digest) {
+      bad.push('previous does not match its digest, so it was changed on the way; pass the earlier ' +
+        'result\'s `continuation` again exactly as returned, every field and character')
+    } else {
+      const p = a.previous
+      const pairs = has('pairs') && isNameList(a.pairs) ? a.pairs : p.pairs
+      if (!p.plan && pairs.length) {
+        bad.push('previous has no plan, so it cannot review pairs; pass pairs: [] to only re-verify')
+      }
+      if (!pairs.length && !p.unverified.length) {
+        bad.push('previous leaves nothing to do: no pairs to review and no unverified findings')
+      }
+    }
+    for (const key of PREVIOUS_SUPPLIES.filter(has)) {
+      bad.push(key + ' cannot be combined with previous' + (
+        key === 'modules' || key === 'lenses' ? '; narrow a continuation with pairs instead'
+          : key === 'verifyOnly' ? ', which re-verifies its unverified findings; add pairs: [] to only verify'
+            : key === 'verify' ? ': a continuation verifies what it reviews; leave verify out'
+              : ', which supplies it; leave ' + key + ' out'))
+    }
+  }
   return bad
 }
 
 const INVALID_ARGS = ARGS_OK && !UNKNOWN_ARGS.length ? invalidArgs(A) : []
 
-const MODE = A.mode === 'incremental' ? 'incremental' : 'full'
-const SINCE = typeof A.since === 'string' && A.since ? A.since : 'HEAD~1'
+// Only a continuation that passed every check is used; with one, the mode, the
+// diff and the plan come from it and never from the caller.
+const PREV = !INVALID_ARGS.length && isObject(A.previous) ? A.previous : null
+const SRC = PREV || A
+
+const MODE = SRC.mode === 'incremental' ? 'incremental' : 'full'
+const SINCE = typeof SRC.since === 'string' && SRC.since ? SRC.since : 'HEAD~1'
 const TODAY = typeof A.today === 'string' && A.today ? A.today : 'date not supplied'
 const OUT = typeof A.out === 'string' && A.out ? A.out : 'review-report.md'
 const PREFIX = typeof A.agentPrefix === 'string' ? A.agentPrefix : 'review-kit:'
-const CHANGED = Array.isArray(A.changed) ? unique(asList(A.changed).map(normPath).filter(Boolean)) : null
+const CHANGED = Array.isArray(SRC.changed) ? unique(asList(SRC.changed).map(normPath).filter(Boolean)) : null
 
 // A "+500k"-style directive is a hard ceiling: once it is spent, agent() throws.
 // When one is set and maxJobs is not, size the fan-out to fit inside it rather
@@ -300,11 +406,19 @@ const MAX_JOBS = posInt(A.maxJobs, BUDGET_JOBS || 12)
 const CAP_CHOSEN = posInt(A.maxJobs, 0) > 0 || BUDGET_JOBS !== null
 const VERIFY_PER_JOB = posInt(A.maxVerifyPerJob, 2)
 const VERIFY = A.verify !== false
-const VERIFY_ONLY = Array.isArray(A.verifyOnly) && A.verifyOnly.length ? A.verifyOnly : null
+// A continuation without a plan comes from a verifyOnly run that had none, and
+// can only re-verify, so it runs as one.
+const VERIFY_ONLY = Array.isArray(A.verifyOnly) && A.verifyOnly.length ? A.verifyOnly
+  : PREV && !PREV.plan ? PREV.unverified : null
 const WANT_MODULES = asList(A.modules)
 const WANT_LENSES = asList(A.lenses)
-// null when absent; a present list, even an empty one, is a filter.
-const WANT_PAIRS = A.pairs !== undefined ? asList(A.pairs) : null
+// null when absent; a present list, even an empty one, is a filter. A
+// continuation's pairs apply unless the caller narrows them, and there an
+// empty list means review nothing and only re-verify.
+const WANT_PAIRS = A.pairs !== undefined ? asList(A.pairs) : PREV ? PREV.pairs : null
+const CARRY = PREV ? PREV.confirmed : Array.isArray(A.carry) ? A.carry : []
+// What earlier runs reviewed, so the report can state combined coverage.
+const PRIOR_REVIEWED = PREV ? PREV.reviewedPairs : []
 
 const ROLES = isObject(A.agents) ? A.agents : {}
 
@@ -658,6 +772,77 @@ function pairLabel(job) {
   return job.lens.id + ' @ ' + job.module.name
 }
 
+// Findings in one file within this many lines of each other are offered to the
+// reporter as one candidate group.
+const GROUP_LINES = 5
+
+// Candidate duplicates, found in plain code so the reporter's merge step reads
+// groups rather than searching a flat list. A group chains findings in one
+// file whose lines are each within GROUP_LINES of the previous one. Groups are
+// ordered by their most severe member; the reporter still decides every merge.
+function groupNearby(list) {
+  const sorted = list.slice().sort((a, b) =>
+    normPath(a.file) < normPath(b.file) ? -1 : normPath(a.file) > normPath(b.file) ? 1 : a.line - b.line)
+  const groups = []
+  let last = null
+  for (const f of sorted) {
+    if (last && normPath(last.file) === normPath(f.file) && f.line - last.line <= GROUP_LINES) {
+      groups[groups.length - 1].push(f)
+    } else {
+      groups.push([f])
+    }
+    last = f
+  }
+  const top = g => Math.min(...g.map(f => SEVERITY_RANK[severityOf(f)]))
+  return groups.map(g => g.sort(bySeverity)).sort((a, b) => top(a) - top(b))
+}
+
+// Every result, stopped or finished, names the code that ran.
+function stopped(fields) {
+  return { ok: false, version: SCRIPT_VERSION, ...fields }
+}
+
+// What a later run needs to pick up where this one ends, and nothing else: the
+// caller re-emits it as tool input, so every field costs output tokens.
+function continuationOf(plan, pairs, confirmed, unverified, reviewedPairs) {
+  const c = { version: SCRIPT_VERSION, mode: MODE }
+  if (MODE === 'incremental') {
+    c.since = SINCE
+    c.changed = CHANGED
+  }
+  c.plan = plan
+  c.pairs = pairs
+  c.confirmed = confirmed
+  c.unverified = unverified
+  c.reviewedPairs = reviewedPairs
+  c.digest = digestOf(c)
+  return c
+}
+
+const SAME_ARGS = 'the same today, out, model and effort'
+
+// The caller's manual for a finished run that left work, written once per run
+// instead of into meta.whenToUse, which every session pays for.
+function finishedNext(left, unverified, capped, planned) {
+  const parts = []
+  if (left) parts.push(left + ' pairs unreviewed (capped or blocked)')
+  if (unverified) parts.push(unverified + ' findings unverified')
+  const lines = [
+    'This run left ' + parts.join(' and ') + '. Ask the user whether to continue. If so, relaunch with ' +
+      'previous: this result\'s `continuation`, passed unchanged, plus ' + SAME_ARGS +
+      (left ? ' and maxJobs: ' + left : '') + '. It ' +
+      [left ? 'reviews those pairs' : '', unverified ? 're-verifies those findings' : ''].filter(Boolean).join(' and ') +
+      ', and its report states the coverage of both runs, so reuse out to replace this report.',
+  ]
+  if (left && unverified) lines.push('To only verify, add pairs: [].')
+  if (capped) {
+    lines.push('In the session that ran this workflow, relaunching it with resumeFromRunId and maxJobs: ' +
+      planned + ' also reviews the capped pairs and reuses cached agents, without re-emitting the ' +
+      'continuation; it does not verify findings left unverified.')
+  }
+  return lines.join(' ')
+}
+
 function planPrompt() {
   const lines = [
     'Scope a multi-lens code review of the repository in your working directory.',
@@ -775,6 +960,13 @@ function recheckFinding(f) {
   }
 }
 
+// parallel() turns a thunk that throws into null; verifyOne never throws, but
+// a null is still kept as a failed check rather than a lost finding.
+function settleChecks(checked, sent) {
+  return checked.map((entry, i) => entry ||
+    { ...sent[i], verdict: null, verifyState: 'verifier-failed', verifyError: DROPPED })
+}
+
 function verifyPrompt(finding) {
   return [
     'Try to refute this review finding.',
@@ -881,14 +1073,32 @@ function causeLine(fc) {
   return fc.cause + ' -> ' + (fc.pairs ? 'pairs: ' + fc.pairs.join(', ') : 'findings: ' + fc.findings.join(', '))
 }
 
+// Combined coverage for a run that continues `previous`: what this run
+// reviewed, what earlier runs did among the pairs that apply here, and which
+// of the pairs left out of this run no run has reviewed.
+function combinedCoverage(c) {
+  const applicable = unique(c.reviewedPairs.concat(c.blockedPairs, c.cappedPairs, c.unselectedPairs))
+  const here = new Set(c.reviewedPairs)
+  const prior = new Set(c.priorReviewedPairs)
+  const earlier = applicable.filter(p => prior.has(p) && !here.has(p))
+  return {
+    applicable: applicable.length,
+    earlier: earlier,
+    covered: c.reviewedPairs.length + earlier.length,
+    neverReviewed: c.unselectedPairs.filter(p => !prior.has(p)),
+  }
+}
+
 function reportPrompt(payload) {
   const c = payload.coverage
   const v = payload.verification
-  const continuing = Array.isArray(A.carry) && A.carry.length > 0
+  const continuing = !PREV && CARRY.length > 0
+  const combined = PREV && !VERIFY_ONLY && payload.plan ? combinedCoverage(c) : null
   return [
     'Write the report for this multi-lens review to `' + OUT + '`.',
     '',
     'Date: ' + TODAY,
+    'Script: review-kit ' + SCRIPT_VERSION,
     'Mode: ' + (VERIFY_ONLY
       ? 'verify-only (findings an earlier run left unverified, re-checked)'
       : MODE + (MODE === 'incremental' ? ' (since ' + SINCE + ')' : '')),
@@ -906,16 +1116,29 @@ function reportPrompt(payload) {
     '',
     VERIFY_ONLY
       ? 'Verify-only run: no reviewer ran, so this run adds no module x lens coverage. ' +
-        VERIFY_ONLY.length + ' findings an earlier run left unverified were sent to verifiers. ' +
+        payload.counts.rechecked + ' findings an earlier run left unverified were sent to verifiers. ' +
         'This run was given none of the earlier run\'s coverage. In Coverage gaps, say that the ' +
         'earlier run\'s coverage gaps are not available to this run and are in that run\'s own ' +
         'result; do not name a file or any other place they might be recorded.'
-      : 'Module x lens pairs: ' + (c.unselectedPairs.length
-        ? c.planned + ' selected of ' + (c.planned + c.unselectedPairs.length) + ' applicable'
-        : c.planned + ' applicable') + ', ' + c.reviewed + ' reviewed successfully, ' +
-        c.capped + ' never run because of the maxJobs cap, ' + c.blocked + ' blocked or failed.',
-    COVERAGE_LISTS.some(key => c[key].length) || c.failureCauses.length
+      : combined
+        ? 'Module x lens pairs: ' + combined.applicable + ' applicable. ' + c.reviewed +
+          ' reviewed successfully in this run, ' + combined.earlier.length + ' reviewed in an earlier run ' +
+          'and not in this one, ' + c.capped + ' never run because of the maxJobs cap, ' + c.blocked +
+          ' blocked or failed, ' + combined.neverReviewed.length + ' neither selected in this run nor ' +
+          'reviewed in the earlier runs this continuation records. Combined: ' + combined.covered + ' of ' +
+          combined.applicable + ' applicable pairs reviewed. In the header line, give coverage as ' +
+          '"coverage: ' + combined.covered + ' of ' + combined.applicable + ' (' + combined.earlier.length +
+          ' in an earlier run)".'
+        : 'Module x lens pairs: ' + (c.unselectedPairs.length
+          ? c.planned + ' selected of ' + (c.planned + c.unselectedPairs.length) + ' applicable'
+          : c.planned + ' applicable') + ', ' + c.reviewed + ' reviewed successfully, ' +
+          c.capped + ' never run because of the maxJobs cap, ' + c.blocked + ' blocked or failed.',
+    COVERAGE_LISTS.some(key => c[key].length) || c.failureCauses.length || (combined && combined.earlier.length)
       ? 'Each list below is fenced, one item per line: list every item as written.'
+      : '',
+    combined
+      ? factList('Pairs reviewed in an earlier run and not in this one; they are covered, not gaps:',
+        'earlier pairs', combined.earlier)
       : '',
     VERIFY_ONLY
       ? ''
@@ -929,8 +1152,11 @@ function reportPrompt(payload) {
       : c.cappedPairs.length
         ? factList('Pairs never run because of the cap:', 'capped pairs', c.cappedPairs)
         : 'Nothing was dropped by the cap.',
-    factList('Applicable pairs not selected in this run, so not reviewed here:',
-      'unselected pairs', c.unselectedPairs),
+    combined
+      ? factList('Applicable pairs neither selected in this run nor reviewed in an earlier run, so ' +
+        'never reviewed:', 'unselected pairs', combined.neverReviewed)
+      : factList('Applicable pairs not selected in this run, so not reviewed here:',
+        'unselected pairs', c.unselectedPairs),
     c.unselectedPairs.length && continuing
       ? 'This run continues an earlier one and carries its confirmed findings, so the unselected ' +
         'pairs may be covered by the run being continued. Say so; do not call them gaps of that run.'
@@ -984,6 +1210,10 @@ function reportPrompt(payload) {
     v.failed
       ? 'State that ' + v.failed + ' findings could not be verified because the verifier failed - that is a tooling failure, not a judgement about those findings.'
       : '',
+    PREV && payload.counts.rechecked
+      ? payload.counts.rechecked + ' of the checked findings were left unverified by an earlier run and ' +
+        're-checked in this one; they are counted above and sorted below like the rest.'
+      : '',
     '',
     '## CONFIRMED findings (' + payload.confirmed.length + ') - verified, report these first',
     payload.counts.carried
@@ -995,32 +1225,40 @@ function reportPrompt(payload) {
         '`claimedSeverity`, and `severity` is the verified grade. Report the verified grade and ' +
         'say that it was re-graded from the claimed one.'
       : '',
-    repoData('confirmed findings', JSON.stringify(payload.confirmed, null, 1)),
+    'They arrive as a JSON list of candidate groups, most severe first. Plain code grouped findings ' +
+      'that cite the same file within ' + GROUP_LINES + ' lines of each other, so a group can hold one ' +
+      'defect seen by several lenses or distinct defects that sit close together. Decide every merge ' +
+      'yourself, within a group or across groups.',
+    repoData('confirmed findings', JSON.stringify(groupNearby(payload.confirmed))),
     '',
     '## UNVERIFIED findings (' + payload.unverified.length + ') - own section, marked unconfirmed',
     'Each carries a `verifyState`: `over-budget` (never checked), `verifier-failed` (the check',
     'itself failed), `verifier-inconclusive` (the verifier answered without ruling either way),',
     'or `verification-off`.',
-    repoData('unverified findings', JSON.stringify(payload.unverified, null, 1)),
+    repoData('unverified findings', JSON.stringify(payload.unverified)),
   ].filter(line => line !== '').join('\n')
 }
 
 // ------------------------------------------------------------------ plan --
 
+// First, so a run on a stale install says which code it is before anything
+// else, including an argument it rejects.
+log('review-kit ' + SCRIPT_VERSION + '.')
+
 if (!ARGS_OK) {
   log('Arguments must be an object of named values, e.g. { today: "YYYY-MM-DD", out: "..." }; got ' +
     (args === null ? 'null' : Array.isArray(args) ? 'an array' : 'a ' + typeof args) +
     '. Nothing was reviewed.')
-  return { ok: false, reason: 'bad-args', known: KNOWN_ARGS, report: null }
+  return stopped({ reason: 'bad-args', known: KNOWN_ARGS, report: null })
 }
 if (UNKNOWN_ARGS.length) {
   log('Unknown arguments: ' + UNKNOWN_ARGS.join(', ') + '. Known arguments: ' +
     KNOWN_ARGS.join(', ') + '. Nothing was reviewed.')
-  return { ok: false, reason: 'bad-args', unknown: UNKNOWN_ARGS, known: KNOWN_ARGS, report: null }
+  return stopped({ reason: 'bad-args', unknown: UNKNOWN_ARGS, known: KNOWN_ARGS, report: null })
 }
 if (INVALID_ARGS.length) {
   log('Invalid arguments: ' + INVALID_ARGS.join('; ') + '. Nothing was reviewed.')
-  return { ok: false, reason: 'bad-args', invalid: INVALID_ARGS, known: KNOWN_ARGS, report: null }
+  return stopped({ reason: 'bad-args', invalid: INVALID_ARGS, known: KNOWN_ARGS, report: null })
 }
 
 // Checked before any agent runs: an incremental run with no diff to scope it
@@ -1029,12 +1267,26 @@ if (MODE === 'incremental' && !CHANGED) {
   log('Incremental run without `changed`: pass the repo-relative paths from ' +
     '`git diff --name-only ' + SINCE + '...HEAD` plus uncommitted and untracked files. ' +
     'Nothing was reviewed.')
-  return { ok: false, reason: 'changed-files-required', since: SINCE, report: null }
+  return stopped({ reason: 'changed-files-required', since: SINCE, report: null })
 }
 if (MODE === 'incremental' && !CHANGED.length) {
   log('Incremental run since ' + SINCE + ': no changed files, so there is nothing to review.')
-  return { ok: false, reason: 'no-changed-files', since: SINCE, report: null }
+  return stopped({ reason: 'no-changed-files', since: SINCE, report: null })
 }
+// The default lands at the repository root, which the reviewed repository may
+// not ignore, so the path is said on every run.
+log('Report: ' + OUT + (typeof A.out === 'string' ? '' : ' (the default, at the repository root: pass out to ' +
+  'put it in an ignored folder, or make sure the repository ignores it)') + '.')
+
+if (PREV) {
+  log('Continuing an earlier run' +
+    (PREV.version !== SCRIPT_VERSION ? ' made by review-kit ' + shown(PREV.version || 'before 0.3.0') : '') +
+    ': ' + (VERIFY_ONLY ? 0 : WANT_PAIRS.length) + ' pairs to review, ' + PREV.unverified.length +
+    ' unverified findings to re-verify, ' + PREV.confirmed.length + ' confirmed findings carried, ' +
+    PRIOR_REVIEWED.length + ' pairs reviewed earlier.' +
+    (PREV.unverified.length ? ' The re-checks add ' + PREV.unverified.length + ' verifiers to the worst case.' : ''))
+}
+
 if (BUDGET_JOBS && !posInt(A.maxJobs, 0) && !VERIFY_ONLY) {
   log('Token budget ' + BUDGET_TOTAL + ': maxJobs set to ' + MAX_JOBS + ' at roughly ' +
     OUTPUT_TOKENS_PER_JOB + ' output tokens per module x lens job. Pass maxJobs to override.')
@@ -1043,12 +1295,13 @@ if (BUDGET_JOBS && !posInt(A.maxJobs, 0) && !VERIFY_ONLY) {
 // A supplied plan is checked with the same filters as the planner's, before
 // any agent runs. One that fails them stops the run: silently planning afresh
 // would change every module name the caller's `pairs` refer to.
-const SUPPLIED = A.plan !== undefined ? cleanPlan(A.plan) : null
+const SUPPLIED = PREV ? (PREV.plan ? cleanPlan(PREV.plan) : null)
+  : A.plan !== undefined ? cleanPlan(A.plan) : null
 if (SUPPLIED && (!SUPPLIED.modules.length || !SUPPLIED.lenses.length)) {
   log('The supplied plan has ' + SUPPLIED.modules.length + ' usable modules and ' +
     SUPPLIED.lenses.length + ' usable lenses; pass the `plan` from an earlier result unchanged. ' +
     'Nothing was reviewed.')
-  return { ok: false, reason: 'bad-plan', report: null }
+  return stopped({ reason: 'bad-plan', report: null })
 }
 
 // An override for a role that will not run is not an error - a relaunch with a
@@ -1079,11 +1332,13 @@ if (VERIFY_ONLY) {
   const checked = await parallel(rechecks.map(f => () => verifyOne(f)))
   const coverage = { planned: 0, reviewed: 0, capped: 0, blocked: 0, malformedFindings: 0, failureCauses: [] }
   for (const key of COVERAGE_LISTS) coverage[key] = []
+  coverage.reviewedPairs = []
+  coverage.priorReviewedPairs = PRIOR_REVIEWED
   return await finish(
     SUPPLIED ? { repoSummary: SUPPLIED.repoSummary, modules: SUPPLIED.modules, lenses: SUPPLIED.lenses } : null,
-    checked.map((entry, i) => entry ||
-      { ...rechecks[i], verdict: null, verifyState: 'verifier-failed', verifyError: DROPPED }),
+    settleChecks(checked, rechecks),
     coverage,
+    [],
   )
 }
 
@@ -1118,7 +1373,7 @@ if (SUPPLIED) {
         '.claude/agents/)') +
       (MODELS.planner ? ', that model "' + MODELS.planner + '" is available to you' : '') +
       (EFFORTS.planner ? ', that its model supports effort "' + EFFORTS.planner + '"' : '') + '.')
-    return { ok: false, reason: 'planner-unavailable', detail: planError, report: null }
+    return stopped({ reason: 'planner-unavailable', detail: planError, report: null })
   }
   cleaned = cleanPlan(raw)
 }
@@ -1149,7 +1404,7 @@ let lenses = plan.lenses
 if (!modules.length || !lenses.length) {
   log('The planner returned ' + modules.length + ' modules and ' + lenses.length +
     ' lenses; there is nothing to review.')
-  return { ok: false, reason: 'empty-plan', repoSummary: plan.repoSummary, plan: plan, report: null }
+  return stopped({ reason: 'empty-plan', repoSummary: plan.repoSummary, plan: plan, report: null })
 }
 
 // A subset that matches nothing must not fall back to everything: someone
@@ -1164,15 +1419,14 @@ if (WANT_MODULES.length) {
     const available = modules.map(m => m.name)
     log('None of the requested modules (' + WANT_MODULES.join(', ') + ') exist in this repo. ' +
       'The planner found: ' + available.join(', ') + '. Nothing was reviewed.')
-    return {
-      ok: false,
+    return stopped({
       reason: 'modules-not-found',
       requested: WANT_MODULES,
       available: available,
       repoSummary: plan.repoSummary,
       plan: plan,
       report: null,
-    }
+    })
   }
   unmatchedModules = unique(WANT_MODULES.filter(n => !modules.some(m => m.name === n)))
   if (unmatchedModules.length) {
@@ -1187,15 +1441,14 @@ if (WANT_LENSES.length) {
     const available = lenses.map(l => l.id)
     log('None of the requested lenses (' + WANT_LENSES.join(', ') + ') apply to this repo. ' +
       'The planner chose: ' + available.join(', ') + '. Nothing was reviewed.')
-    return {
-      ok: false,
+    return stopped({
       reason: 'lenses-not-found',
       requested: WANT_LENSES,
       available: available,
       repoSummary: plan.repoSummary,
       plan: plan,
       report: null,
-    }
+    })
   }
   unmatchedLenses = unique(WANT_LENSES.filter(id => !lenses.some(l => l.id === id)))
   if (unmatchedLenses.length) {
@@ -1225,8 +1478,7 @@ if (MODE === 'incremental') {
   if (unchanged.length === modules.length) {
     log('Incremental run since ' + SINCE + ': none of the ' + CHANGED.length + ' changed files ' +
       'falls under the selected modules (' + unchanged.join(', ') + '), so nothing was reviewed.')
-    return {
-      ok: false,
+    return stopped({
       reason: 'no-changed-files',
       since: SINCE,
       modules: unchanged,
@@ -1234,7 +1486,7 @@ if (MODE === 'incremental') {
       repoSummary: plan.repoSummary,
       plan: plan,
       report: null,
-    }
+    })
   }
   if (unchanged.length) {
     log('Incremental run: dropped ' + unchanged.length + ' modules with no changed files: ' +
@@ -1299,15 +1551,14 @@ const applicable = breadth.concat(remainder)
 if (!applicable.length) {
   log('No lens applies to any module, so nothing can be reviewed. Check the planner\'s ' +
     'appliesTo names against its module names: ' + modules.map(m => m.name).join(', ') + '.')
-  return {
-    ok: false,
+  return stopped({
     reason: 'no-applicable-pairs',
     modules: modules.map(m => m.name),
     lenses: lenses.map(l => l.id),
     repoSummary: plan.repoSummary,
     plan: plan,
     report: null,
-  }
+  })
 }
 
 // The counts above see only pairs. A selected module that no selected lens
@@ -1346,7 +1597,8 @@ if (unpairedLenses.length) {
 // that matches nothing (including an empty one) stops the run. The applicable
 // pairs it leaves out are reported as unselected, apart from the capped ones:
 // the caller chose to skip them, and a continuation may have reviewed them in
-// the run it continues.
+// the run it continues. With `previous`, an empty list is the one exception:
+// that run reviews nothing and only re-verifies.
 let allJobs = applicable
 let unmatchedPairs = []
 let unselectedPairs = []
@@ -1355,18 +1607,17 @@ if (WANT_PAIRS) {
   allJobs = applicable.filter(job => wanted.indexOf(pairLabel(job)) !== -1)
   const labels = applicable.map(pairLabel)
   const unmatched = unique(wanted.filter(p => labels.indexOf(p) === -1))
-  if (!allJobs.length) {
+  if (!allJobs.length && !(PREV && !wanted.length)) {
     log('None of the requested pairs (' + (wanted.join(', ') || 'an empty list') + ') is an ' +
       'applicable module x lens pair here. Available: ' + labels.join(', ') + '. Nothing was reviewed.')
-    return {
-      ok: false,
+    return stopped({
       reason: 'pairs-not-found',
       requested: wanted,
       available: labels,
       repoSummary: plan.repoSummary,
       plan: plan,
       report: null,
-    }
+    })
   }
   if (unmatched.length) {
     log('Requested pairs that match nothing and were skipped: ' + unmatched.join(', ') + '.')
@@ -1384,16 +1635,17 @@ log('Plan: ' + modules.length + ' modules x ' + lenses.length + ' lenses -> ' + 
 
 // The default cap dropping pairs is the user's call, not the script's: a
 // workflow cannot ask mid-run, so it stops here, after the one planner agent,
-// and the caller asks. The relaunch passes `plan` back, so nothing already
-// spent is spent again. An explicit maxJobs or a token budget is that choice
+// and the caller asks. The relaunch passes the continuation back, plan
+// included, so nothing already spent is spent again. An explicit maxJobs or a token budget is that choice
 // made up front and never stops here.
 if (droppedJobs.length && !CAP_CHOSEN) {
   log('Stopped before review: ' + allJobs.length + ' pairs apply, but the default cap of ' + MAX_JOBS +
     ' would skip ' + droppedJobs.length + ' of them (' + droppedJobs.map(pairLabel).join(', ') + '). ' +
-    'Relaunch with this result\'s plan and maxJobs (' + allJobs.length + ' runs them all) or pairs. ' +
-    'Nothing was reviewed.')
-  return {
-    ok: false,
+    'Relaunch with this result\'s continuation as previous, plus maxJobs (' + allJobs.length +
+    ' runs them all) or pairs. Nothing was reviewed.')
+  // Whatever an earlier run handed over is handed on, so stopping here loses
+  // none of it.
+  return stopped({
     reason: 'needs-confirmation',
     maxJobs: MAX_JOBS,
     applicable: allJobs.length,
@@ -1403,7 +1655,15 @@ if (droppedJobs.length && !CAP_CHOSEN) {
     repoSummary: plan.repoSummary,
     plan: plan,
     report: null,
-  }
+    continuation: continuationOf(plan, allJobs.map(pairLabel), CARRY.filter(isAnchored),
+      PREV ? PREV.unverified : [], PRIOR_REVIEWED),
+    next: allJobs.length + ' pairs apply, but the default cap runs ' + MAX_JOBS + ', so nothing was ' +
+      'reviewed yet. Ask the user whether to run all ' + allJobs.length + ', only the ' + MAX_JOBS +
+      ' in wouldRun, or pairs they choose from wouldRun and wouldSkip. Then relaunch with previous: this ' +
+      'result\'s `continuation`, passed unchanged, plus ' + SAME_ARGS + ', and maxJobs: ' +
+      allJobs.length + ', maxJobs: ' + MAX_JOBS + ', or pairs: the chosen labels. A caller that cannot ' +
+      'ask passes maxJobs up front.',
+  })
 }
 
 if (modules.length > MAX_JOBS) {
@@ -1421,7 +1681,7 @@ if (!VERIFY) log('Verification is off: every finding will be reported as unconfi
 // pipeline, not parallel: each module x lens result goes straight into its own
 // verification while other lenses are still reading. Cross-job duplicates are
 // merged later by the reporter, which is the one step that needs them all.
-const results = await pipeline(
+const reviewing = !jobs.length ? Promise.resolve([]) : pipeline(
   jobs,
 
   // Caught here, not left to the pipeline: a stage that throws becomes null
@@ -1507,11 +1767,21 @@ const results = await pipeline(
   },
 )
 
+// Findings a `previous` left unverified go to verifiers next to the review, so
+// a continuation is one run, not a review run and then a verify run. They are
+// not subject to maxVerifyPerJob: that budget is per reviewer, and these have
+// none in this run.
+const RECHECKS = PREV ? PREV.unverified.map(recheckFinding) : []
+const rechecking = !RECHECKS.length ? Promise.resolve([]) : parallel(RECHECKS.map(f => () => verifyOne(f)))
+
+const [results, rechecked] = await Promise.all([reviewing, rechecking])
+
 // -------------------------------------------------------------- aggregate --
 
 const settled = results.map((r, i) => r || { pair: pairLabel(jobs[i]), blocked: true, findings: [], error: DROPPED })
 
 const blockedPairs = settled.filter(r => r.blocked).map(r => r.pair)
+const reviewedPairs = settled.filter(r => !r.blocked).map(r => r.pair)
 const reviewCauses = groupCauses(settled.filter(r => r.blocked).map(r => ({ cause: r.error, item: r.pair })), 'pairs')
 for (const fc of reviewCauses) log('Blocked: ' + causeLine(fc) + '.')
 const malformedFindings = settled.reduce((sum, r) => sum + (r.malformed || 0), 0)
@@ -1520,7 +1790,17 @@ if (malformedFindings) {
     'line, and were dropped unread.')
 }
 
-return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), []), {
+// What is left of the work this run was asked to do: pairs it capped or that
+// were blocked, and, in a continuation, the earlier run's pairs that `pairs`
+// left out of this one. A pair any run has reviewed is done. Pairs a plain
+// `pairs` run left out were the caller's choice, not leftover work.
+const reviewedEver = new Set(PRIOR_REVIEWED.concat(reviewedPairs))
+const owed = new Set(blockedPairs.concat(droppedJobs.map(pairLabel),
+  PREV ? unselectedPairs.filter(p => PREV.pairs.map(normPair).indexOf(p) !== -1) : []))
+const leftPairs = applicable.map(pairLabel).filter(p => owed.has(p) && !reviewedEver.has(p))
+
+return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), []).concat(
+  settleChecks(rechecked, RECHECKS)), {
   planned: allJobs.length,
   reviewed: jobs.length - blockedPairs.length,
   capped: droppedJobs.length,
@@ -1543,14 +1823,17 @@ return await finish(plan, settled.reduce((acc, r) => acc.concat(r.findings), [])
   unpairedChanged: unpairedChanged,
   malformedFindings: malformedFindings,
   failureCauses: reviewCauses,
-})
+  reviewedPairs: reviewedPairs,
+  priorReviewedPairs: PRIOR_REVIEWED,
+}, leftPairs)
 
 // ---------------------------------------------------------------- report --
 
 // Shared by a review run and a verifyOnly run: sorts every finding by its
 // verdict, folds in `carry`, has the reporter write the file, and builds the
 // result. `plan` is null only for a verifyOnly run that was given none.
-async function finish(plan, everyFinding, reviewCoverage) {
+// `leftPairs` are the pairs a continuation of this run would review.
+async function finish(plan, everyFinding, reviewCoverage, leftPairs) {
   // Reviewer causes arrive with the coverage; verifier causes are added here,
   // where a review run and a verifyOnly run meet.
   const verifyCauses = groupCauses(everyFinding
@@ -1593,7 +1876,7 @@ async function finish(plan, everyFinding, reviewCoverage) {
   // Carried findings were confirmed by an earlier run. A copy this run checked
   // again - confirmed or refuted - is settled by this run's verdict, so the
   // carried one is dropped; the rest are reported as not re-verified.
-  const carry = carriedFindings(A.carry)
+  const carry = carriedFindings(CARRY)
   const recheckedKeys = new Set(confirmedMerged.keys)
   for (const f of refuted) recheckedKeys.add(findingKey(f))
   const carriedMerged = mergeExact(carry.slice().sort(bySeverity), recheckedKeys)
@@ -1630,8 +1913,10 @@ async function finish(plan, everyFinding, reviewCoverage) {
     failed: everyFinding.filter(f => f.verifyState === 'verifier-failed').length,
   }
 
+  const rechecked = VERIFY_ONLY ? everyFinding.length : PREV ? PREV.unverified.length : 0
   log((VERIFY_ONLY ? 'Verification done: ' + everyFinding.length + ' findings re-checked -> '
-    : 'Review done: ' + everyFinding.length + ' raw findings -> ') +
+    : 'Review done: ' + everyFinding.length + ' raw findings' +
+      (rechecked ? ' (' + rechecked + ' re-checked from an earlier run)' : '') + ' -> ') +
     confirmed.length + ' confirmed, ' + refuted.length + ' refuted, ' + unverified.length + ' unverified' +
     (duplicates ? ', ' + duplicates + ' exact duplicates merged' : '') +
     (superseded ? ', ' + superseded + ' copies settled by another verdict' : '') +
@@ -1653,6 +1938,7 @@ async function finish(plan, everyFinding, reviewCoverage) {
       duplicates: duplicates,
       superseded: superseded,
       carried: carriedMerged.list.length,
+      rechecked: rechecked,
     },
     verification: verification,
     coverage: coverage,
@@ -1690,8 +1976,12 @@ async function finish(plan, everyFinding, reviewCoverage) {
       '; the findings are in this run\'s return value but no file was written.')
   }
 
+  // Only a run that left work behind can be continued. The pairs reviewed so
+  // far accumulate, so a third run still knows what the first one covered.
+  const resumable = leftPairs.length > 0 || unverified.length > 0
   return {
     ok: true,
+    version: SCRIPT_VERSION,
     mode: VERIFY_ONLY ? 'verify-only' : MODE,
     report: written ? OUT : null,
     reportError: reportError || undefined,
@@ -1701,5 +1991,9 @@ async function finish(plan, everyFinding, reviewCoverage) {
     plan: plan,
     confirmed: confirmed,
     unverified: unverified,
+    continuation: resumable
+      ? continuationOf(plan, leftPairs, confirmed, unverified, unique(PRIOR_REVIEWED.concat(coverage.reviewedPairs)))
+      : undefined,
+    next: resumable ? finishedNext(leftPairs.length, unverified.length, coverage.capped, coverage.planned) : undefined,
   }
 }

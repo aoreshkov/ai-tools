@@ -651,7 +651,7 @@ test('findings are partitioned exhaustively into confirmed, refuted and unverifi
   )
   assert.equal(of('verifier').length, 5)
   assert.deepEqual(result.counts,
-    { raw: 7, confirmed: 1, refuted: 1, unverified: 5, duplicates: 0, superseded: 0, carried: 0 })
+    { raw: 7, confirmed: 1, refuted: 1, unverified: 5, duplicates: 0, superseded: 0, carried: 0, rechecked: 0 })
   assert.equal(result.confirmed[0].title, 'B')
   assert.equal(result.confirmed[0].severity, 'critical', 'verifier regrade wins')
   assert.equal(result.confirmed[0].claimedSeverity, 'high', 'the reviewer grade is kept beside it')
@@ -1206,7 +1206,7 @@ test('carried findings reach the reporter marked, and a fresh verdict replaces t
   assert.equal(result.counts.carried, 1)
   const prompt = of('reporter')[0].prompt
   assert.match(prompt, /`carried: true` come from an earlier run and were not re-verified/)
-  assert.match(prompt, /"carried": true/)
+  assert.match(prompt, /"carried":true/)
 })
 
 test('an unverified copy of a carried finding is dropped', async () => {
@@ -1400,6 +1400,246 @@ test('verifyOnly with a bad list or a review argument stops before any agent sta
       JSON.stringify(result.invalid))
     assert.equal(calls.length, 0)
   }
+})
+
+// ---------------------------------------------------- version and report --
+
+const SCRIPT_VERSION = SOURCE.match(/^const SCRIPT_VERSION = '([^']+)'$/m)[1]
+
+test('SCRIPT_VERSION matches the plugin manifest, so a bump cannot skip the script', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../review-kit/.claude-plugin/plugin.json', import.meta.url), 'utf8'))
+  assert.equal(SCRIPT_VERSION, manifest.version)
+})
+
+test('every result names the code that ran, stopped ones included, and the log says it first', async () => {
+  const results = [
+    await run({ maxjobs: 4 }, quiet),
+    await run({}, { ...quiet, planner: () => null }),
+    await run({}, { ...quiet, planner: () => widePlan() }),
+    await run({}, quiet),
+    await run({ verifyOnly: [unverifiedEntry('X', 'high')] }, quiet),
+  ]
+  assert.deepEqual(results.map(r => r.result.reason || r.result.mode),
+    ['bad-args', 'planner-unavailable', 'needs-confirmation', 'full', 'verify-only'])
+  for (const { result, logs } of results) {
+    assert.equal(result.version, SCRIPT_VERSION, JSON.stringify(result.reason))
+    assert.equal(logs[0], 'review-kit ' + SCRIPT_VERSION + '.')
+  }
+  assert.ok(results[3].of('reporter')[0].prompt.includes('\nScript: review-kit ' + SCRIPT_VERSION + '\n'))
+})
+
+test('every run logs the report path, and says when it is the default at the root', async () => {
+  const byDefault = await run({}, quiet)
+  assert.ok(byDefault.logs.some(l => l.startsWith('Report: review-report.md (the default, at the repository root')))
+  const chosen = await run({ out: 'docs/2026-10-27-code-review.md' }, quiet)
+  assert.ok(chosen.logs.includes('Report: docs/2026-10-27-code-review.md.'))
+})
+
+test('the reporter gets compact JSON, with nearby findings in one candidate group', async () => {
+  const { of } = await run({ modules: ['core'], lenses: ['security'], maxVerifyPerJob: 3 }, {
+    ...quiet,
+    reviewer: () => ({
+      findings: [
+        finding('Far', 'high', { line: 40 }),
+        finding('Near A', 'low', { line: 10 }),
+        finding('Near B', 'medium', { line: 14 }),
+      ],
+    }),
+    verifier: () => ({ refuted: false, reason: 'holds' }),
+  })
+  const prompt = of('reporter')[0].prompt
+  const body = fencedList(prompt, '', 'confirmed findings')
+  assert.equal(body.length, 1, 'one line: no indentation')
+  const groups = JSON.parse(body[0])
+  assert.deepEqual(groups.map(g => g.map(f => f.title)), [['Far'], ['Near B', 'Near A']])
+  assert.match(prompt, /candidate groups/)
+  assert.equal(fencedList(prompt, '', 'unverified findings').length, 1)
+})
+
+// ------------------------------------------------------------- previous --
+
+// One reviewer finds two concurrency defects in DashboardState.kt; with one
+// verifier per reviewer, the second is left unverified - the shape of the run
+// that lost DashboardState.kt:70 and :107.
+const dashboard = {
+  ...quiet,
+  planner: () => widePlan(),
+  reviewer: (prompt, opts) => opts.label === 'concurrency @ core'
+    ? {
+      findings: [
+        finding('Restart on UI thread', 'high', { file: 'core/DashboardState.kt', line: 107 }),
+        finding('Racy status', 'medium', { file: 'core/DashboardState.kt', line: 70 }),
+      ],
+    }
+    : { findings: [] },
+  verifier: () => ({ refuted: false, reason: 'holds' }),
+}
+
+async function firstRun(extra = {}) {
+  return (await run({ today: '2026-10-27', maxJobs: 12, maxVerifyPerJob: 1, ...extra }, dashboard)).result
+}
+
+test('previous runs exactly the left pairs plus one verifier per unverified finding', async () => {
+  const first = await firstRun()
+  assert.equal(first.coverage.cappedPairs.length, 3)
+  assert.deepEqual(first.unverified.map(f => f.line), [70])
+  assert.deepEqual(first.continuation.pairs, first.coverage.cappedPairs)
+
+  const second = await run({ today: '2026-10-27', previous: first.continuation }, dashboard)
+  assert.equal(second.of('planner').length, 0)
+  assert.deepEqual(second.of('reviewer').map(c => c.opts.label), first.coverage.cappedPairs)
+  assert.deepEqual(second.of('verifier').map(c => c.opts.label), ['verify core/DashboardState.kt:70'])
+  const r = second.result
+  assert.deepEqual(r.confirmed.map(f => [f.line, !!f.carried]), [[107, true], [70, false]])
+  assert.deepEqual(r.unverified, [])
+  assert.equal(r.counts.rechecked, 1)
+  assert.equal(r.continuation, undefined, 'nothing is left to continue')
+  assert.equal(r.next, undefined)
+})
+
+test('a continuation report states the combined coverage', async () => {
+  const first = await firstRun()
+  const { of, result } = await run({ previous: first.continuation }, dashboard)
+  const prompt = of('reporter')[0].prompt
+  assert.match(prompt, /Module x lens pairs: 15 applicable\. 3 reviewed successfully in this run, 12 reviewed in an earlier run/)
+  assert.match(prompt, /Combined: 15 of 15 applicable pairs reviewed/)
+  assert.match(prompt, /"coverage: 15 of 15 \(12 in an earlier run\)"/)
+  assert.deepEqual(fencedList(prompt, 'Pairs reviewed in an earlier run and not in this one; they are covered, not gaps:',
+    'earlier pairs'), first.coverage.reviewedPairs)
+  assert.equal(fencedList(prompt, '', 'unselected pairs'), null)
+  assert.doesNotMatch(prompt, /run being continued/)
+  assert.deepEqual(result.coverage.priorReviewedPairs, first.coverage.reviewedPairs)
+  assert.deepEqual(result.coverage.reviewedPairs, first.coverage.cappedPairs)
+})
+
+test('reviewed pairs accumulate across a chain of continuations', async () => {
+  const first = await firstRun({ maxJobs: 5 })
+  const second = (await run({ previous: first.continuation, maxJobs: 5 }, dashboard)).result
+  assert.equal(second.continuation.reviewedPairs.length, 10)
+  assert.equal(second.continuation.pairs.length, 5)
+  const third = await run({ previous: second.continuation, maxJobs: 5 }, dashboard)
+  assert.match(third.of('reporter')[0].prompt, /"coverage: 15 of 15 \(10 in an earlier run\)"/)
+  assert.equal(third.result.continuation, undefined)
+})
+
+test('an unverified finding from previous that is refuted is gone from every section', async () => {
+  const first = await firstRun()
+  const { result, of } = await run({ previous: first.continuation }, {
+    ...dashboard,
+    verifier: prompt => /Title: Racy status/.test(prompt) ? { refuted: true, reason: 'guarded' } : { refuted: false, reason: 'holds' },
+  })
+  assert.ok(!result.confirmed.concat(result.unverified).some(f => f.title === 'Racy status'))
+  assert.equal(result.counts.refuted, 1)
+  assert.doesNotMatch(of('reporter')[0].prompt, /Racy status/)
+})
+
+test('previous with pairs: [] only re-verifies, and still states the earlier coverage', async () => {
+  const first = await firstRun()
+  const { of, result } = await run({ previous: first.continuation, pairs: [] }, dashboard)
+  assert.equal(of('reviewer').length, 0)
+  assert.equal(of('verifier').length, 1)
+  assert.match(of('reporter')[0].prompt, /0 reviewed successfully in this run, 12 reviewed in an earlier run/)
+  assert.deepEqual(result.continuation.pairs, first.coverage.cappedPairs, 'the capped pairs are still owed')
+  assert.match(result.next, /3 pairs unreviewed/)
+})
+
+test('a confirmation stop hands on a continuation, and previous plus maxJobs runs all of it', async () => {
+  const stop = (await run({ today: '2026-10-27' }, dashboard)).result
+  assert.equal(stop.reason, 'needs-confirmation')
+  assert.equal(stop.continuation.pairs.length, 15)
+  assert.match(stop.next, /previous: this result's `continuation`/)
+  assert.match(stop.next, /maxJobs: 15, maxJobs: 12, or pairs/)
+  const again = await run({ today: '2026-10-27', previous: stop.continuation }, dashboard)
+  assert.equal(again.result.reason, 'needs-confirmation', 'the cap is still the caller\'s choice')
+  const all = await run({ today: '2026-10-27', previous: stop.continuation, maxJobs: 15 }, dashboard)
+  assert.equal(all.of('planner').length, 0)
+  assert.equal(all.of('reviewer').length, 15)
+})
+
+test('a capped result and a result with unverified findings each say how to continue', async () => {
+  const first = await firstRun()
+  assert.match(first.next, /3 pairs unreviewed \(capped or blocked\) and 1 findings unverified/)
+  assert.match(first.next, /previous: this result's `continuation`/)
+  assert.match(first.next, /maxJobs: 3/)
+  assert.match(first.next, /resumeFromRunId and maxJobs: 15/)
+  assert.match(first.next, /To only verify, add pairs: \[\]/)
+  const onlyUnverified = await firstRun({ maxJobs: 15 })
+  assert.match(onlyUnverified.next, /1 findings unverified/)
+  assert.doesNotMatch(onlyUnverified.next, /resumeFromRunId|maxJobs/)
+  const done = (await run({}, findsOneConfirmed)).result
+  assert.equal(done.continuation, undefined)
+  assert.equal(done.next, undefined)
+})
+
+test('previous combined with an argument it supplies stops the run', async () => {
+  const { continuation } = await firstRun()
+  for (const [extra, key] of [
+    [{ carry: [] }, 'carry'],
+    [{ plan: makePlan() }, 'plan'],
+    [{ verifyOnly: [unverifiedEntry('X', 'high')] }, 'verifyOnly'],
+    [{ mode: 'full' }, 'mode'],
+    [{ modules: ['core'] }, 'modules'],
+    [{ lenses: ['security'] }, 'lenses'],
+    [{ verify: true }, 'verify'],
+  ]) {
+    const { result, calls } = await run({ previous: continuation, ...extra }, dashboard)
+    assert.equal(result.reason, 'bad-args', key)
+    assert.ok(result.invalid.some(m => m.startsWith(key + ' cannot be combined with previous')), JSON.stringify(result.invalid))
+    assert.equal(calls.length, 0)
+  }
+})
+
+test('a previous that was changed on the way fails its digest and runs nothing', async () => {
+  const { continuation } = await firstRun()
+  const altered = JSON.parse(JSON.stringify(continuation))
+  altered.confirmed[0].line = 108
+  const pairs = JSON.parse(JSON.stringify(continuation))
+  pairs.pairs.pop()
+  for (const previous of [altered, pairs, { ...continuation, digest: 'x' }]) {
+    const { result, calls } = await run({ previous }, dashboard)
+    assert.equal(result.reason, 'bad-args')
+    assert.ok(result.invalid.some(m => m.startsWith('previous does not match its digest')), JSON.stringify(result.invalid))
+    assert.equal(calls.length, 0)
+  }
+  // A faithful JSON round trip, as the caller makes it, still matches.
+  const copy = JSON.parse(JSON.stringify(continuation))
+  assert.equal((await run({ previous: copy }, dashboard)).result.ok, true)
+})
+
+test('a previous of the wrong shape, or with nothing left, stops the run', async () => {
+  const { continuation } = await firstRun({ maxJobs: 15 })
+  const cases = [
+    ['x', 'previous must be'],
+    [{ ...continuation, digest: undefined }, 'previous has no digest'],
+    [{ ...continuation, confirmed: [{ title: 'x' }] }, 'previous.confirmed'],
+  ]
+  for (const [previous, prefix] of cases) {
+    const { result } = await run({ previous }, dashboard)
+    assert.ok(result.invalid.some(m => m.startsWith(prefix)), JSON.stringify(result.invalid))
+  }
+  const { result } = await run({ previous: continuation, pairs: [] }, { ...dashboard })
+  assert.equal(result.ok, true, 'one unverified finding is still work')
+  const done = await run({ previous: { ...continuation, unverified: [] } }, dashboard)
+  assert.equal(done.result.reason, 'bad-args', 'digest guards the edit')
+})
+
+test('an incremental continuation keeps its diff, and the caller cannot pass another', async () => {
+  const handlers = { ...dashboard, planner: () => makePlan() }
+  const first = (await run({ mode: 'incremental', since: 'origin/main', changed: ['core/A.kt', 'app/B.kt'], maxJobs: 1 },
+    { ...handlers, reviewer: () => ({ findings: [] }) })).result
+  assert.equal(first.continuation.mode, 'incremental')
+  assert.deepEqual(first.continuation.changed, ['core/A.kt', 'app/B.kt'])
+  const next = await run({ previous: first.continuation }, { ...handlers, reviewer: () => ({ findings: [] }) })
+  assert.ok(next.of('reviewer').every(c => /Incremental run against `origin\/main`/.test(c.prompt)))
+  const clash = await run({ previous: first.continuation, changed: ['x.kt'] }, handlers)
+  assert.equal(clash.result.reason, 'bad-args')
+})
+
+test('the caller manual fits in the skill listing, which cuts entries at about 1,536 chars', () => {
+  const meta = new Function('return ' + SOURCE.match(/^export const meta = (\{[\s\S]*?\n\})/m)[1])()
+  const entry = meta.description + ' - ' + meta.whenToUse
+  assert.ok(entry.length < 1400, entry.length + ' chars')
+  assert.match(meta.whenToUse, /`next`/)
 })
 
 // ------------------------------------------------------- model and effort --

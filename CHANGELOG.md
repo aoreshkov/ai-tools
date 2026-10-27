@@ -1,5 +1,44 @@
 # Changelog
 
+## review-kit 0.3.0
+
+- **Version collision.** A pre-release build had used the version strings 0.2.x, and
+  Claude Code names a plugin's cache directory after its version. So an install of the
+  released 0.2.2 could keep the older directory and run code that refused `model`,
+  `effort` and `verifyOnly`. 0.3.0 is above every earlier string. The README's
+  Requirements give the recovery steps for a 0.2.x install.
+- Every result, `ok: false` included, carries `version`, and the log's first line names
+  it. The report header names it too. A test keeps the script's version equal to
+  `plugin.json`.
+- New argument `previous`: an earlier result's `continuation`, passed unchanged.
+  - One run reviews the pairs left (capped or blocked), re-verifies the findings left
+    unverified next to that review, and carries the confirmed ones.
+  - The report states combined coverage, for example "coverage: 62 of 62 (12 in an
+    earlier run)", and lists the pairs earlier runs reviewed. Before this, a continuation
+    reported only its own pairs, and findings left unverified were lost.
+  - Continuations chain through `coverage.reviewedPairs` and
+    `coverage.priorReviewedPairs`.
+  - A continuation carries a digest, and one that changed on the way stops the run as
+    `bad-args`.
+  - `previous` cannot be combined with `plan`, `carry`, `verifyOnly`, `mode`, `since`,
+    `changed`, `modules`, `lenses` or `verify`. With it, `pairs: []` only re-verifies.
+  - `plan`, `pairs`, `carry` and `verifyOnly` work as before.
+- Every result that can be continued carries `next`, the caller's instructions for the
+  relaunch, including a needs-confirmation stop.
+  - `whenToUse` drops those instructions and is 1,172 characters with `description`,
+    down from 1,986. The skill listing cut the old entry at about 1,536 characters, so
+    the `verifyOnly` instructions never reached a caller. A test keeps the entry under
+    1,400.
+  - `whenToUse` now asks for `out` in the repository's ignored documents folder.
+- Every run logs the report path, and says so when it is the default at the repository
+  root.
+- The reporter gets compact JSON, and its confirmed findings arrive in candidate groups
+  (same file, within 5 lines). It still decides every merge.
+- README: Claude Code 2.1.305 or later (reliable resume of multi-agent pipeline items),
+  tested on 2.1.311; keep the machine awake during long runs; same-session continuation
+  by `resumeFromRunId`.
+- CI pins Claude Code 2.1.311.
+
 ## Marketplace: kotlin-lib 1.0.0
 
 - `kotlin-lib` moves from 0.4.0 (`aoreshkov/kotlin-lib-mcp` v0.7.0) to 1.0.0 (v0.9.1),
