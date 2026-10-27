@@ -1,13 +1,15 @@
 schema_version: "1.1"
 name: seeded-defects
 description: >
-  A two-module Kotlin repo with five seeded defects. Measures how many the review
-  finds, confirms and reports in one small run. A manual pre-release gate, not CI:
+  A two-module Kotlin repo with five seeded defects and four decoys (code that looks
+  defective but is guarded). Measures how many defects the review finds, confirms and
+  reports in one small run, and whether it confirms any decoy. A manual pre-release
+  gate, not CI:
   run with --scaffold --ablation none --allow-tools Workflow Write. The defect graders
   mean something only when workflow-completed passes: without dynamic workflows (off by
   default on Pro, and the eval loads no user settings) the session calls the agents
   itself. scripts/seeded-defects-real-run.mjs runs this case through claude -p with
   workflows on.
-tags: [recall]
+tags: [recall, precision]
 context:
   scaffold_script: scaffold.sh

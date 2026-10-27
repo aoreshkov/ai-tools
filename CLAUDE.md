@@ -13,7 +13,7 @@ A Claude Code plugin marketplace. Public on GitHub as `aoreshkov/ai-tools`.
   - `workflows/review.js` - the dynamic workflow script (orchestration lives here).
   - `agents/{planner,reviewer,verifier,reporter}.md` - the four roles it spawns.
   - `evals/seeded-defects/` - `claude plugin eval` case: a scaffolded Kotlin repo with
-    five known defects. Model calls; a manual pre-release gate, never CI. Defect scores
+    five known defects and four decoys. Model calls; a manual pre-release gate, never CI. Defect scores
     count only when `workflow-completed` passes and, in a real run, claude exited cleanly
     (see README).
 - `token-audit/` - ranks a project's sessions by token use from local transcripts.

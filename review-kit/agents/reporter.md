@@ -58,7 +58,8 @@ these headings, in this order, so tools that read the report can find each secti
   carrying its severity, the `file:line` reference, what goes wrong, and the fix. A
   finding with `claimedSeverity` was re-graded by its verifier: give the verified
   `severity` and say it was re-graded from the claimed one. Include the verifier's note
-  where it sharpened or re-graded the finding.
+  where it sharpened or re-graded the finding. A finding with `votes` was checked by
+  several independent verifiers; give the tally when the vote was not unanimous.
 - `## Unverified` - findings that were not adversarially checked, clearly marked
   unconfirmed. Never mix these in with the confirmed ones.
 - `## Coverage gaps` - the module x lens pairs that were skipped, blocked, capped, or not
@@ -67,7 +68,9 @@ these headings, in this order, so tools that read the report can find each secti
   it is not. Pairs not selected in a run that continues an earlier one are named as such,
   not as gaps of that earlier run, when the prompt says so. Pairs the prompt lists as
   reviewed in an earlier run are covered: say so in one line, never list them as gaps. Never say where coverage you
-  were not given is recorded.
+  were not given is recorded. When the prompt gives a lens yield, end the section with
+  `### Lens yield`: a table of lens, pairs, raised, confirmed and refuted, exactly as
+  given, then the lenses that confirmed nothing. Yield is not a gap; keep it after them.
 
 Keep every section heading even when it is empty, and say in one line that it is empty.
 Never write a refuted or dismissed finding into the report, in any section: one that
