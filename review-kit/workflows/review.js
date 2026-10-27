@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Multi-lens code review: plan the lenses that fit this repo, fan out read-only reviewers per module x lens, adversarially verify every finding, and write one ranked report',
-  whenToUse: 'Reviewing a whole repository, many modules, or a large diff from several points of view at once. Pass args as an object; unknown keys and values of the wrong type stop the run. Always pass today as YYYY-MM-DD. Pass out inside the repository\'s private, ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one) and bound cost with maxJobs (an integer). Pass model or effort only when the user asks for one: a model alias or full ID ("opus") and an effort level (low to max), each one value for every role or an object by role (planner, reviewer, verifier, reporter); keep both the same on every relaunch. When a result has a `next` field, follow it: it says what to ask the user and how to relaunch.',
+  whenToUse: 'Reviewing a whole repository, many modules, or a large diff from several points of view at once. Pass args as an object; unknown keys and values of the wrong type stop the run. Always pass today as YYYY-MM-DD. Pass out inside the repository\'s private, ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one) and bound cost with maxJobs (an integer). Findings past maxVerifyPerJob (an integer, default 2) per reviewer are reported unverified, so raise it when asked to verify more. Pass model or effort only when the user asks for one: a model alias or full ID ("opus") and an effort level (low to max), each one value for every role or an object by role (planner, reviewer, verifier, reporter); keep both the same on every relaunch. When a result has a `next` field, follow it: it says what to ask the user and how to relaunch.',
   phases: [
     { title: 'Plan', detail: 'one agent maps the modules and picks the lenses that apply' },
     { title: 'Review', detail: 'one read-only reviewer per module x lens pair' },
@@ -81,7 +81,7 @@ export const meta = {
 
 // Equal to review-kit/.claude-plugin/plugin.json `version` (a test checks).
 // Not in meta, which must stay a pure literal.
-const SCRIPT_VERSION = '0.3.0'
+const SCRIPT_VERSION = '0.3.1'
 
 function posInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
