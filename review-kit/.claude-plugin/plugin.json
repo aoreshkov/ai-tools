@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "review-kit",
   "displayName": "Review Kit",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Multi-lens code review as a dynamic workflow: plans the lenses that fit the repo, fans out read-only reviewers per module x lens, adversarially verifies each finding, and writes one ranked, deduplicated report.",
   "author": {
     "name": "Atanas Oreshkov",

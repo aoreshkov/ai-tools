@@ -162,7 +162,7 @@ directly:
 | `since`           | `HEAD~1`             | Incremental only: baseline git ref                       |
 | `changed`         | —                    | Incremental only, required: repo-relative changed paths  |
 | `today`           | —                    | Date string; workflow scripts cannot call `new Date()`   |
-| `out`             | `review-report.md`   | Report path, repo-relative; put it where the repo ignores it, e.g. `docs/` |
+| `out`             | `review-report.md`   | Report path, repo-relative (no leading `/`, drive letter, `~` or `..`); put it where the repo ignores it, e.g. `docs/` |
 | `modules`         | all                  | List of module names, for a narrow run                   |
 | `lenses`          | all                  | List of lens ids                                         |
 | `maxJobs`         | `12`, or from budget | Cap on module × lens reviewers; see [Before a capped run](#before-a-capped-run) |
@@ -312,7 +312,8 @@ There are two ways to continue:
 
 With `previous`, `pairs` narrows what is reviewed, and `pairs: []` reviews nothing and
 only re-verifies. `maxJobs`, `maxVerifyPerJob`, `votes`, `model`, `effort`, `today`, `out`
-and the agent overrides work as usual. `previous` supplies the plan, the mode and the diff, so
+and the agent overrides work as usual. The continuation does not carry them, so `next`
+says which to pass again. `previous` supplies the plan, the mode and the diff, so
 passing `plan`, `carry`, `verifyOnly`, `mode`, `since`, `changed`, `modules`, `lenses` or
 `verify` with it stops the run as `bad-args`. So does a continuation that changed on the
 way: it carries a digest of its own content, because the calling model re-emits it,
@@ -373,9 +374,11 @@ ceiling, so pass `maxJobs` yourself if the sizing proves wrong for your repo.
 A run stops with a named reason rather than producing a reassuring empty report:
 arguments that are not an object, contain an unknown key (`maxjobs` for `maxJobs`), or
 give a known key a value of the wrong type (`modules: "core"` for `["core"]`, `maxJobs:
-"4"`, `since` or `changed` without `mode: "incremental"`), the plugin's agents not resolving, a planner that returned nothing, a supplied `plan`
+"4"`, `since` or `changed` without `mode: "incremental"`, a control character in `since`,
+`today` or `out`, an `out` outside the repository), the plugin's agents not resolving, a planner that returned nothing, a supplied `plan`
 with no usable module or lens, a `modules`/`lenses`/`pairs` subset that matches nothing
-in the repo, a lens set that applies to no module, or an
+in the repo (a `modules` or `lenses` miss returns the plan, and `next` says to relaunch with it
+and names from `available`), a lens set that applies to no module, or an
 incremental run with no `changed` list or no changed file inside the selected modules. A
 narrow request never silently widens into a full sweep.
 

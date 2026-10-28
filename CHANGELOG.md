@@ -1,5 +1,24 @@
 # Changelog
 
+## review-kit 0.5.1
+
+Fixes from a review of review-kit by review-kit.
+
+- **`next` names every arg a relaunch must repeat.** It said to pass the same `today`,
+  `out`, `model`, `effort` and `votes`, but a continuation does not carry `agentPrefix`,
+  `agents` or `maxVerifyPerJob` either. A run with its agents in `.claude/agents/` that
+  followed `next` looked for `review-kit:` agents on the relaunch, and a raised
+  `maxVerifyPerJob` fell back to 2. `next` now names all eight.
+- **`since`, `today` and `out` are checked like the other prompt-bound args.** A control
+  character in any of them, or in a continuation's `since`, stops the run as `bad-args`:
+  each reaches an agent prompt as plain text, where a newline would add a line in the
+  runner's voice. `out` must also be repo-relative, as the README always said: a leading
+  `/`, a drive letter, `~` or `..` stops the run, because the reporter writes the file.
+- **A `modules` or `lenses` miss says how to relaunch.** `modules-not-found` and
+  `lenses-not-found` now carry `next`: ask the user which of `available` to review, then
+  relaunch with those names and the result's `plan`. Passing the plan skips the planner,
+  which could otherwise name the modules differently again.
+
 ## review-kit 0.5.0
 
 - **Cost estimate before a capped run.** A `needs-confirmation` stop now carries
