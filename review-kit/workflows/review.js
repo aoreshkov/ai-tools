@@ -92,7 +92,7 @@ export const meta = {
 
 // Equal to review-kit/.claude-plugin/plugin.json `version` (a test checks).
 // Not in meta, which must stay a pure literal.
-const SCRIPT_VERSION = '0.5.0'
+const SCRIPT_VERSION = '0.5.1'
 
 function posInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
@@ -282,7 +282,9 @@ function continuationProblems(p) {
   if (typeof p.digest !== 'string' || !p.digest) bad.push('previous has no digest; pass an earlier result\'s `continuation` unchanged')
   if (p.mode !== 'full' && p.mode !== 'incremental') bad.push('previous.mode must be "full" or "incremental"')
   if (p.mode === 'incremental') {
-    if (typeof p.since !== 'string' || !p.since) bad.push('previous.since must be a non-empty string')
+    if (typeof p.since !== 'string' || !p.since || hasControl(p.since)) {
+      bad.push('previous.since must be a non-empty string on one line')
+    }
     if (!isNameList(p.changed) || !p.changed.length) bad.push('previous.changed must be a non-empty list of paths')
   }
   if (p.plan !== null && !isObject(p.plan)) bad.push('previous.plan must be an object or null')
@@ -322,8 +324,15 @@ function invalidArgs(a) {
   if (has('mode') && a.mode !== 'full' && a.mode !== 'incremental') {
     bad.push('mode must be "full" or "incremental"')
   }
+  // All three reach agent prompts as plain text, so each must be one line.
   for (const key of ['since', 'today', 'out']) {
-    if (has(key) && (typeof a[key] !== 'string' || !a[key].trim())) bad.push(key + ' must be a non-empty string')
+    if (has(key) && (typeof a[key] !== 'string' || !a[key].trim() || hasControl(a[key]))) {
+      bad.push(key + ' must be a non-empty string on one line')
+    }
+  }
+  // The reporter writes the report wherever `out` points.
+  if (typeof a.out === 'string' && a.out.trim() && !hasControl(a.out) && !insideRepo(a.out)) {
+    bad.push('out must be a repo-relative path: no leading /, drive letter, ~ or ..')
   }
   if (a.mode !== 'incremental') {
     for (const key of ['since', 'changed']) {
@@ -946,7 +955,10 @@ function lensYield(entries) {
   return Array.from(byLens.values())
 }
 
-const SAME_ARGS = 'the same today, out, model, effort and votes'
+// Every arg a continuation does not carry and the relaunch must repeat. Without
+// agentPrefix or agents, the relaunch looks for agents this run did not use.
+const SAME_ARGS = 'the same today, out, agentPrefix, agents, model, effort, votes and maxVerifyPerJob ' +
+  'as this run, each only if it had it'
 
 // What the rest of a run is likely to cost, for the caller to show the user at
 // needs-confirmation. Tokens are subagent tokens as /workflows counts them,
@@ -990,6 +1002,14 @@ function tokensText(n) {
 function estimateText(e) {
   return 'about ' + e.agents + ' agents and ' + tokensText(e.tokens) + ' tokens, at most ' + e.mostAgents +
     ' and ' + tokensText(e.mostTokens)
+}
+
+// A requested subset matched nothing, so nothing ran. Passing the plan back
+// skips the planner, which could otherwise name the modules differently again.
+function notFoundNext(key, what) {
+  return 'Nothing was reviewed: none of the requested ' + key + ' are in this plan. Show the user ' +
+    '`available` and ask which to review. Then relaunch with ' + key + ': the chosen ' + what +
+    ', plan: this result\'s `plan`, passed unchanged, and every other arg this run had.'
 }
 
 // The caller's manual for a finished run that left work, written once per run
@@ -1770,6 +1790,7 @@ if (WANT_MODULES.length) {
       repoSummary: plan.repoSummary,
       plan: plan,
       report: null,
+      next: notFoundNext('modules', 'module names'),
     })
   }
   unmatchedModules = unique(WANT_MODULES.filter(n => !modules.some(m => m.name === n)))
@@ -1792,6 +1813,7 @@ if (WANT_LENSES.length) {
       repoSummary: plan.repoSummary,
       plan: plan,
       report: null,
+      next: notFoundNext('lenses', 'lens ids'),
     })
   }
   unmatchedLenses = unique(WANT_LENSES.filter(id => !lenses.some(l => l.id === id)))
