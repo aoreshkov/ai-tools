@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Multi-lens code review: plan the lenses that fit this repo, fan out read-only reviewers per module x lens, adversarially verify every finding, and write one ranked report',
-  whenToUse: 'Reviewing a whole repository, many modules, or a large diff from several points of view at once. Pass args as an object; unknown keys and values of the wrong type stop the run. Always pass today as YYYY-MM-DD. Pass out inside the repository\'s private, ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff review pass mode "incremental", since (the git ref), and changed: every repo-relative path from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted files excluded. Narrow with modules or lenses (lists of names, even for one) and bound cost with maxJobs (an integer). Findings past maxVerifyPerJob (an integer, default 2) per reviewer are reported unverified, so raise it when asked to verify more; votes (an integer, or by severity) sets verifiers per finding. Pass model or effort only when the user asks for one: a model alias or full ID ("opus") and an effort level (low to max), each one value for every role or an object by role (planner, reviewer, verifier, reporter); keep both the same on every relaunch. When a result has a `next` field, follow it: it says what to ask the user and how to relaunch.',
+  whenToUse: 'A whole repository or many modules, or a large diff, through several lenses with coverage counted; for one branch or PR, prefer /code-review. Pass args as an object, always with today (YYYY-MM-DD), and out in the repository\'s ignored documents folder when its CLAUDE.md names one, e.g. "docs/<today>-code-review.md". For a diff: mode "incremental", since (the git ref) and changed: the paths from `git diff --name-only <since>...HEAD` plus uncommitted and untracked files, deleted excluded. Optional: modules, lenses (lists), maxJobs, maxVerifyPerJob (findings verified per reviewer, default 2; raise it when asked to verify more), votes (verifiers per finding), and model or effort only when the user asks (keep both on relaunch). Follow the result\'s `next`.',
   phases: [
     { title: 'Plan', detail: 'one agent maps the modules and picks the lenses that apply' },
     { title: 'Review', detail: 'one read-only reviewer per module x lens pair' },
@@ -29,7 +29,8 @@ export const meta = {
 //   maxJobs          cap on module x lens reviewers (default 12, or derived
 //                    from the turn's token budget when one is set). When the
 //                    default would drop pairs, the run stops after planning
-//                    with reason 'needs-confirmation' so the caller can ask;
+//                    with reason 'needs-confirmation' and an `estimate` of
+//                    each choice's agents and tokens, so the caller can ask;
 //                    passing maxJobs, or setting a budget, is that choice.
 //   verify           false to skip the Verify phase entirely
 //   maxVerifyPerJob  findings per reviewer sent to verification (default 2)
@@ -91,7 +92,7 @@ export const meta = {
 
 // Equal to review-kit/.claude-plugin/plugin.json `version` (a test checks).
 // Not in meta, which must stay a pure literal.
-const SCRIPT_VERSION = '0.4.0'
+const SCRIPT_VERSION = '0.5.0'
 
 function posInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
@@ -429,29 +430,6 @@ const OUT = typeof A.out === 'string' && A.out ? A.out : 'review-report.md'
 const PREFIX = typeof A.agentPrefix === 'string' ? A.agentPrefix : 'review-kit:'
 const CHANGED = Array.isArray(SRC.changed) ? unique(asList(SRC.changed).map(normPath).filter(Boolean)) : null
 
-// A "+500k"-style directive is a hard ceiling: once it is spent, agent() throws.
-// When one is set and maxJobs is not, size the fan-out to fit inside it rather
-// than letting the tail of the run fail. The estimate is output tokens per
-// module x lens job, including its verifiers; it is deliberately rough and is
-// logged so a run that under- or over-shoots can be corrected with maxJobs.
-// Only budget.total is used, never remaining(), so a relaunch derives the same
-// cap and logs the same line.
-//
-// No cap value may reach the planner prompt. The planner is the first agent,
-// and a resume replays only the unchanged prefix of agent() calls: a planner
-// prompt that moved with maxJobs would discard the whole run's cache and
-// return a different plan.
-const OUTPUT_TOKENS_PER_JOB = 25000
-const OUTPUT_TOKENS_FIXED = 20000
-const BUDGET_TOTAL = typeof budget === 'object' && budget && typeof budget.total === 'number' &&
-  budget.total > 0 ? budget.total : null
-const BUDGET_JOBS = BUDGET_TOTAL
-  ? Math.max(1, Math.floor((BUDGET_TOTAL - OUTPUT_TOKENS_FIXED) / OUTPUT_TOKENS_PER_JOB))
-  : null
-const MAX_JOBS = posInt(A.maxJobs, BUDGET_JOBS || 12)
-// Only the default cap is unchosen. An explicit maxJobs or a token budget is
-// the caller deciding how much to spend, so neither stops to ask.
-const CAP_CHOSEN = posInt(A.maxJobs, 0) > 0 || BUDGET_JOBS !== null
 const VERIFY_PER_JOB = posInt(A.maxVerifyPerJob, 2)
 const VERIFY = A.verify !== false
 
@@ -467,6 +445,35 @@ function votesFor(value) {
 
 const VOTES = votesFor(A.votes)
 const MOST_VOTES = Math.max(...SEVERITIES.map(s => VOTES[s]))
+
+// A "+500k"-style directive is a hard ceiling: once it is spent, agent() throws.
+// When one is set and maxJobs is not, size the fan-out to fit inside it rather
+// than letting the tail of the run fail. A job is one reviewer and, at worst,
+// maxVerifyPerJob findings times the largest vote count in verifiers. The
+// per-agent figures are average output tokens, rounded up, from a 62-pair
+// review of a Kotlin repository on 2.1.311: reviewer 3.5k, verifier 1.4-1.9k,
+// planner 10.7k, reporter 6.5-11k. The result is logged so a run that under-
+// or over-shoots can be corrected with maxJobs. Only budget.total is used,
+// never remaining(), so a relaunch derives the same cap and logs the same line.
+//
+// No cap value may reach the planner prompt. The planner is the first agent,
+// and a resume replays only the unchanged prefix of agent() calls: a planner
+// prompt that moved with maxJobs would discard the whole run's cache and
+// return a different plan.
+const OUTPUT_TOKENS_REVIEWER = 4000
+const OUTPUT_TOKENS_VERIFIER = 2000
+const OUTPUT_TOKENS_FIXED = 25000
+const OUTPUT_TOKENS_PER_JOB = OUTPUT_TOKENS_REVIEWER +
+  (VERIFY ? VERIFY_PER_JOB * MOST_VOTES * OUTPUT_TOKENS_VERIFIER : 0)
+const BUDGET_TOTAL = typeof budget === 'object' && budget && typeof budget.total === 'number' &&
+  budget.total > 0 ? budget.total : null
+const BUDGET_JOBS = BUDGET_TOTAL
+  ? Math.max(1, Math.floor((BUDGET_TOTAL - OUTPUT_TOKENS_FIXED) / OUTPUT_TOKENS_PER_JOB))
+  : null
+const MAX_JOBS = posInt(A.maxJobs, BUDGET_JOBS || 12)
+// Only the default cap is unchosen. An explicit maxJobs or a token budget is
+// the caller deciding how much to spend, so neither stops to ask.
+const CAP_CHOSEN = posInt(A.maxJobs, 0) > 0 || BUDGET_JOBS !== null
 // A continuation without a plan comes from a verifyOnly run that had none, and
 // can only re-verify, so it runs as one.
 const VERIFY_ONLY = Array.isArray(A.verifyOnly) && A.verifyOnly.length ? A.verifyOnly
@@ -940,6 +947,50 @@ function lensYield(entries) {
 }
 
 const SAME_ARGS = 'the same today, out, model, effort and votes'
+
+// What the rest of a run is likely to cost, for the caller to show the user at
+// needs-confirmation. Tokens are subagent tokens as /workflows counts them,
+// which is also the unit of Claude Code's `Large workflow` warning. The
+// averages come from a 62-pair review of a mid-size Kotlin repository on
+// 2.1.311, every role on Opus: a reviewer used 43k tokens and raised 1.3
+// findings, 8.5% of them claimed critical or high (10% here, rounded up); a
+// verifier used 26k and the reporter 22-74k. Model choice moves tokens little (Sonnet reviewers came
+// within 10% of Opus ones in the seeded-defects runs), but repository size
+// moves them a lot: reviewers used about 9k on the small seeded-defects scaffold.
+const EST_TOKENS_REVIEWER = 43000
+const EST_TOKENS_VERIFIER = 26000
+const EST_TOKENS_REPORTER = 50000
+const EST_FINDINGS_PER_JOB = 1.3
+const EST_SEVERE_SHARE = 0.1
+const EST_BASIS = 'Rough: per-agent averages from a mid-size repository; they grow with its size. ' +
+  'The planner already ran.'
+
+function estimateFor(jobs, rechecks) {
+  const mean = (a, b) => (a + b) / 2
+  const votesPerFinding = EST_SEVERE_SHARE * mean(VOTES.critical, VOTES.high) +
+    (1 - EST_SEVERE_SHARE) * mean(VOTES.medium, VOTES.low)
+  const recheckVotes = rechecks.reduce((n, f) => n + VOTES[rankable(f.severity) || FALLBACK_SEVERITY], 0)
+  const verifiers = recheckVotes +
+    (VERIFY ? Math.round(jobs * Math.min(VERIFY_PER_JOB, EST_FINDINGS_PER_JOB) * votesPerFinding) : 0)
+  const mostVerifiers = recheckVotes + (VERIFY ? jobs * VERIFY_PER_JOB * MOST_VOTES : 0)
+  const tokens = v => Math.round((jobs * EST_TOKENS_REVIEWER + v * EST_TOKENS_VERIFIER +
+    EST_TOKENS_REPORTER) / 10000) * 10000
+  return {
+    agents: jobs + verifiers + 1,
+    tokens: tokens(verifiers),
+    mostAgents: jobs + mostVerifiers + 1,
+    mostTokens: tokens(mostVerifiers),
+  }
+}
+
+function tokensText(n) {
+  return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : Math.round(n / 1000) + 'k'
+}
+
+function estimateText(e) {
+  return 'about ' + e.agents + ' agents and ' + tokensText(e.tokens) + ' tokens, at most ' + e.mostAgents +
+    ' and ' + tokensText(e.mostTokens)
+}
 
 // The caller's manual for a finished run that left work, written once per run
 // instead of into meta.whenToUse, which every session pays for.
@@ -1578,7 +1629,9 @@ if (VERIFY) {
 
 if (BUDGET_JOBS && !posInt(A.maxJobs, 0) && !VERIFY_ONLY) {
   log('Token budget ' + BUDGET_TOTAL + ': maxJobs set to ' + MAX_JOBS + ' at roughly ' +
-    OUTPUT_TOKENS_PER_JOB + ' output tokens per module x lens job. Pass maxJobs to override.')
+    OUTPUT_TOKENS_PER_JOB + ' output tokens per module x lens job (its reviewer and ' +
+    (VERIFY ? 'up to ' + VERIFY_PER_JOB * MOST_VOTES + ' verifiers' : 'no verifier') + ') plus ' +
+    OUTPUT_TOKENS_FIXED + ' for the planner and reporter. Pass maxJobs to override.')
 }
 
 // A supplied plan is checked with the same filters as the planner's, before
@@ -1930,10 +1983,18 @@ log('Plan: ' + modules.length + ' modules x ' + lenses.length + ' lenses -> ' + 
 // included, so nothing already spent is spent again. An explicit maxJobs or a token budget is that choice
 // made up front and never stops here.
 if (droppedJobs.length && !CAP_CHOSEN) {
+  const rechecks = PREV ? PREV.unverified : []
+  const estimate = {
+    wouldRun: estimateFor(jobs.length, rechecks),
+    all: estimateFor(allJobs.length, rechecks),
+    basis: EST_BASIS,
+  }
   log('Stopped before review: ' + allJobs.length + ' pairs apply, but the default cap of ' + MAX_JOBS +
     ' would skip ' + droppedJobs.length + ' of them (' + droppedJobs.map(pairLabel).join(', ') + '). ' +
     'Relaunch with this result\'s continuation as previous, plus maxJobs (' + allJobs.length +
     ' runs them all) or pairs. Nothing was reviewed.')
+  log('Estimate: the ' + jobs.length + ' in wouldRun take ' + estimateText(estimate.wouldRun) + '; all ' +
+    allJobs.length + ' take ' + estimateText(estimate.all) + '. ' + EST_BASIS)
   // Whatever an earlier run handed over is handed on, so stopping here loses
   // none of it.
   return stopped({
@@ -1944,14 +2005,17 @@ if (droppedJobs.length && !CAP_CHOSEN) {
     votes: VOTES,
     wouldRun: jobs.map(pairLabel),
     wouldSkip: droppedJobs.map(pairLabel),
+    estimate: estimate,
     repoSummary: plan.repoSummary,
     plan: plan,
     report: null,
     continuation: continuationOf(plan, allJobs.map(pairLabel), CARRY.filter(isAnchored),
-      PREV ? PREV.unverified : [], PRIOR_REVIEWED, PRIOR_YIELD),
+      rechecks, PRIOR_REVIEWED, PRIOR_YIELD),
     next: allJobs.length + ' pairs apply, but the default cap runs ' + MAX_JOBS + ', so nothing was ' +
-      'reviewed yet. Ask the user whether to run all ' + allJobs.length + ', only the ' + MAX_JOBS +
-      ' in wouldRun, or pairs they choose from wouldRun and wouldSkip. Then relaunch with previous: this ' +
+      'reviewed yet. Ask the user whether to run all ' + allJobs.length + ' (' + estimateText(estimate.all) +
+      '), only the ' + MAX_JOBS + ' in wouldRun (' + estimateText(estimate.wouldRun) + '), or pairs they ' +
+      'choose from wouldRun and wouldSkip, and show them those estimates as estimates: ' +
+      'averages from a mid-size repository, which grow with its size. Then relaunch with previous: this ' +
       'result\'s `continuation`, passed unchanged, plus ' + SAME_ARGS + ', and maxJobs: ' +
       allJobs.length + ', maxJobs: ' + MAX_JOBS + ', or pairs: the chosen labels. A caller that cannot ' +
       'ask passes maxJobs up front.',

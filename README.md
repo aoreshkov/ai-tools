@@ -93,6 +93,24 @@ source sets, Compose, concurrency, security, tests, dependencies, platform code,
 handling, API surface) and the planner selects from it, so a non-KMP project gets a
 different set from the same plugin.
 
+### When to use which
+
+Claude Code ships its own [`/code-review`](https://code.claude.com/docs/en/code-review-local)
+(alias `/review`). The two answer different questions:
+
+- **`/code-review`** reviews your branch, a pull request, a path or a commit range for
+  correctness bugs, in one background subagent. It takes an effort level, applies its
+  findings with `--fix`, posts them with `--comment`, and hands off to the cloud review
+  with `ultra`. Use it for a branch or a PR.
+- **review-kit** sweeps a whole repository, or many modules, through several lenses at
+  once (architecture, concurrency, security, tests and the rest), has every finding
+  adversarially verified, and counts coverage: which module × lens pairs ran, and which
+  did not and why. Use it for an audit or a pre-release gate. Its
+  [incremental mode](#incremental-runs) gives a large diff the same multi-lens pass.
+
+The workflow's own listing says the same, so Claude picks `/code-review` for a single
+branch or PR.
+
 ### Requirements
 
 - Claude Code 2.1.305 or later, with [dynamic workflows](https://code.claude.com/docs/en/workflows)
@@ -233,6 +251,31 @@ the run stops after planning, before any reviewer starts. It returns
 relaunches with that result's `continuation` as `previous`, so the planner does not run
 again. The result's `next` field tells Claude how.
 
+The stop also carries an `estimate` for both choices, and Claude shows it when it asks:
+
+```json
+"estimate": {
+  "wouldRun": { "agents": 32, "tokens": 1060000, "mostAgents": 85, "mostTokens": 2440000 },
+  "all": { "agents": 39, "tokens": 1290000, "mostAgents": 106, "mostTokens": 3040000 },
+  "basis": "Rough: per-agent averages from a mid-size repository; they grow with its size. The planner already ran."
+}
+```
+
+`agents` and `tokens` are the likely figures, and `mostAgents` and `mostTokens` are the
+worst case the caps allow. Tokens are subagent tokens as `/workflows` counts them, the
+same unit as Claude Code's `Large workflow` warning (more than 25 agents or 1.5M projected
+tokens). The averages come from a 62-pair review of a mid-size Kotlin repository on
+2.1.311:
+
+- A reviewer used 43k tokens and raised 1.3 findings; about 1 in 10 was claimed critical
+  or high, so it got three votes at the default `votes`.
+- A verifier used 26k tokens, and the reporter 22k–74k (50k is assumed).
+
+Repository size moves these figures far more than the model does. On the small
+seeded-defects scaffold the same reviewers used about 9k tokens, and Sonnet reviewers
+came within 10% of Opus ones. Treat the estimate as an order of magnitude, and use
+[Cost notes](#cost-notes) to choose the model.
+
 Passing `maxJobs` yourself, or setting a token budget, is that choice made up front: the
 run never stops to ask. Do that in non-interactive runs (`claude -p`), where nobody can
 answer.
@@ -317,9 +360,13 @@ coverage gaps.
 #### Token budget
 
 With a turn budget set (for example `+500k` in your prompt) and no `maxJobs`, the fan-out
-is sized to fit inside it, at roughly 25k output tokens per module × lens job, and the
-run logs the number it chose. The budget is a hard ceiling, so pass `maxJobs` yourself if
-the estimate proves wrong for your repo.
+is sized to fit inside it, and the run logs the number it chose. The budget counts output
+tokens, so the sizing uses average output measured on a mid-size Kotlin repository, rounded
+up: 4k per reviewer and 2k per verifier, plus 25k for the planner and the reporter
+together. Each module × lens job is costed at its worst case: one reviewer plus
+`maxVerifyPerJob` × the largest `votes` value in verifiers. That is 16k at the defaults
+and 8k with `votes: 1`, so `+500k` runs 29 jobs at the defaults. The budget is a hard
+ceiling, so pass `maxJobs` yourself if the sizing proves wrong for your repo.
 
 #### It fails loudly, not quietly
 
@@ -453,13 +500,26 @@ approval, and "don't ask again" has the same effect as the rule.
   `V` is the largest `votes` value: 86 at the defaults (`V` = 3), 38 with `votes: 1`. Add
   `V` verifiers per finding a `previous` left unverified. Typical runs are well under that,
   since most reviewers return few findings, only findings get verified, and only critical
-  and high ones get three votes. The token-budget estimate of 25k output tokens per job
-  predates votes, so with a budget set, pass `maxJobs` if verifiers start failing near its
-  end. Real full runs have used 20–30 agents and
-  1.5–1.8M subagent tokens, which is past the point (more than 25 agents or 1.5M tokens)
-  where Claude Code shows a `Large workflow` warning. On Pro, where the default size
-  guideline is `small`, expect to see it; it is advisory, and `maxJobs: 4` stays well
-  below it.
+  and high ones get three votes. A [needs-confirmation](#before-a-capped-run) stop
+  estimates both the likely and the worst-case figures before anything is reviewed.
+- Measured runs, in subagent tokens as `/workflows` counts them:
+  - At the defaults (Sonnet reviewers, cap 12), real full runs have used 20–30 agents and
+    1.5–1.8M tokens.
+  - A 62-pair review of a mid-size Kotlin repository with every role on Opus took 144
+    agents and about 5.25M tokens over two runs (0.2.2, one vote per finding). That is
+    about 85k tokens per pair, review and verification together.
+  - Either kind of run passes the point (more than 25 agents or 1.5M tokens) where Claude
+    Code shows a `Large workflow` warning. On Pro, where the default size guideline is
+    `small`, expect to see it. It is advisory, and `maxJobs: 4` stays well below it.
+- Choosing the reviewer model: the planner, verifier and reporter already run on Opus, so
+  `model: "opus"` changes only the reviewers. Token counts barely move with the model, but
+  the price per token does. In the seeded-defects eval, three runs per setting on 2.1.311:
+  - Defaults: 15 of 15 seeded defects confirmed, plus 2 of 12 decoy checks, at
+    $1.65–1.94 a run.
+  - `model: "opus"`: 15 of 15 seeded defects, no decoy, at $1.94–2.34 a run.
+  - So Opus reviewers bought precision, not recall. Use `model: { reviewer: "opus" }` for
+    a release gate, where a false alarm costs a person's time, and the defaults for
+    routine sweeps.
 - Run full sweeps in one long-lived interactive session. A workflow resumes only within
   the session that started it, and only an interactive session signed in to a
   subscription waits out a usage limit; `-p` and scheduled runs simply die at the limit.
