@@ -114,7 +114,7 @@ branch or PR.
 ### Requirements
 
 - Claude Code 2.1.305 or later, with [dynamic workflows](https://code.claude.com/docs/en/workflows)
-  turned on (on Pro, the Dynamic workflows row in `/config`). Tested on 2.1.311. 2.1.305
+  turned on (on Pro, the Dynamic workflows row in `/config`). Tested on 2.1.312. 2.1.305
   is the first release that resumes a workflow whose pipeline items run more than one
   agent reliably, which [continuing a run](#continuing-a-run) relies on. The agents also
   use `omitClaudeMd` (v2.1.271+) and a per-agent cache TTL (v2.1.248+).

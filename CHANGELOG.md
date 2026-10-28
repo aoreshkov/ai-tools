@@ -29,7 +29,8 @@
     tokens, unchanged, because it counts the four agents and omits the workflow. `/context`
     counts the agents at 169 tokens. It counts the workflow's entry for the installed
     0.3.1 (1,303 characters) at ~440–460 tokens, so the entry costs about three times
-    what `plugin details` reports. At the same ratio, 0.5.0's entry is about 320 tokens.
+    what `plugin details` reports. With 0.5.0 installed, `/context` counts its
+    932-character entry at ~320 tokens.
 - README: a new "When to use which" section sets review-kit against the built-in
   `/code-review`. Before a capped run documents `estimate`, the token-budget section gives
   the new sizing, and Cost notes add measured figures:
