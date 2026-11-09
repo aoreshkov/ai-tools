@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { parseTranscript } from '../../token-audit/skills/token-audit/scripts/lib/transcript.mjs'
 import { readLines } from '../../token-audit/skills/token-audit/scripts/lib/locate.mjs'
 import {
-  REPLY, actionKey, analyzeSession, categoryBreakdown, commandCategory, commandKey, costEq, describe, estimateTokens, sessionTotals,
+  REPLY, actionKey, analyzeSession, categoryBreakdown, commandCategory, commandKey, costEq, describe, estimateTokens, sessionTotals, subagentBreakdown,
 } from '../../token-audit/skills/token-audit/scripts/lib/attribute.mjs'
 
 const fixture = rel => fileURLToPath(new URL(`../fixtures/token-audit/projects/${rel}`, import.meta.url))
@@ -158,6 +158,29 @@ test('subagent transcripts and sidechain records add to their session', () => {
   assert.equal(t.subagentTranscripts, 1)
   assert.equal(t.costEq, costEq(t.all))
   assert.equal(sessionTotals(parent).sub.total, 50)
+})
+
+test('subagent usage is grouped by agent type and model, largest first', () => {
+  const parent = parse('fixture-project/with-subagents.jsonl')
+  const sub = { ...parse('fixture-project/with-subagents/subagents/agent-a1.jsonl', { sidechain: true }), agentType: 'Explore' }
+  const rows = subagentBreakdown(parent, [sub])
+  assert.deepEqual(rows.map(r => [r.agentType, r.model, r.transcripts, r.calls, r.total, r.out, r.costEq]), [
+    ['Explore', 'claude-fixture-1', 1, 2, 1000, 200, 1425],
+    [null, null, 0, 1, 50, 10, 100],
+  ])
+  assert.equal(rows.reduce((s, r) => s + r.total, 0), sessionTotals(parent, [sub]).sub.total)
+  assert.equal(analyzeSession(parent, { subagents: [sub] }).subagents.length, 2)
+})
+
+test('a subagent transcript on two models is one row per model; rows without tokens are left out', () => {
+  const call = (id, model, out) => JSON.stringify({ type: 'assistant', message: { id, model, usage: { output_tokens: out } } })
+  const sub = { ...parseTranscript([call('a', 'big', 30), call('b', 'small', 5), call('c', '<synthetic>', 0)]), agentType: 'worker' }
+  const rows = subagentBreakdown(parseTranscript([]), [sub, { ...parseTranscript([call('d', 'small', 5)]) }])
+  assert.deepEqual(rows.map(r => [r.agentType, r.model, r.transcripts, r.calls, r.total]), [
+    ['worker', 'big', 1, 1, 30],
+    [null, 'small', 1, 1, 5],
+    ['worker', 'small', 1, 1, 5],
+  ])
 })
 
 test('cost-eq uses the given weights', () => {

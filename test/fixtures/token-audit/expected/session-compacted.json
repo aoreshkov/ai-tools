@@ -27,7 +27,8 @@
   "subagents": {
     "transcripts": 0,
     "calls": 0,
-    "total": 0
+    "total": 0,
+    "byAgent": []
   },
   "costEq": 1020,
   "context": {

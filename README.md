@@ -533,8 +533,8 @@ Answers "which sessions, actions and prompts used the most tokens in this projec
 the session transcripts Claude Code keeps on your machine. It ranks the project's sessions
 by total tokens. For the costliest it shows the actions behind the cost (by the round-trip
 tokens of the calls that issued them), the tool results re-read most often, the prompts
-that drove the most calls, and a read/edit/build/git split. It then turns those numbers
-into a few concrete habits to change.
+that drove the most calls, a read/edit/build/git split, and the session's subagents by
+agent type and model. It then turns those numbers into a few concrete habits to change.
 
 ```text
 /token-audit:token-audit              top sessions, then the top 3 broken down
@@ -555,7 +555,9 @@ re-read that session's context on every step, the very cost it measures.
   output 5). It is for comparing sessions; for billing figures use `/usage` or the Console.
 - Tool-result sizes and their carry (size times the later calls that re-read the result,
   until a compaction) are estimates, marked `~`.
-- Subagent transcripts count toward the session that started them.
+- Subagent transcripts count toward the session that started them. A session's breakdown
+  groups them by agent type and model, so a workflow's roles can be compared. An agent
+  whose type or model the transcript does not record is listed as `(unknown)`.
 
 Definitions are in [`reference.md`](token-audit/skills/token-audit/reference.md).
 

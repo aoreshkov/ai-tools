@@ -100,13 +100,55 @@ test('session accepts a full id, a unique prefix, or a path', () => {
     assert.equal(r.code, 0, `${target}: ${r.stderr}`)
     const j = JSON.parse(r.stdout)
     assert.equal(j.session.id, 'with-subagents')
-    assert.deepEqual(j.subagents, { transcripts: 1, calls: 3, total: 1050 })
+    // The workflow journal next to the agent transcript is not a subagent.
+    assert.deepEqual(j.subagents, {
+      transcripts: 1, calls: 3, total: 1050,
+      byAgent: [
+        { agentType: 'Explore', model: 'claude-fixture-1', transcripts: 1, calls: 2, total: 1000, output: 200, costEq: 1425 },
+        { agentType: null, model: null, transcripts: 0, calls: 1, total: 50, output: 10, costEq: 100 },
+      ],
+    })
   }
 })
 
 test('session --include-subagents false leaves subagent transcripts out', () => {
   const j = JSON.parse(audit(['session', 'with-subagents', '--json', '--include-subagents', 'false']).stdout)
-  assert.deepEqual(j.subagents, { transcripts: 0, calls: 1, total: 50 })
+  assert.deepEqual(j.subagents, {
+    transcripts: 0, calls: 1, total: 50,
+    byAgent: [{ agentType: null, model: null, transcripts: 0, calls: 1, total: 50, output: 10, costEq: 100 }],
+  })
+})
+
+test('session text lists subagents by agent type and model; a session without any has no such table', () => {
+  const text = audit(['session', 'with-subagents']).stdout
+  assert.match(text, /\nSubagents by agent type and model\nagent type +model +transcripts +calls +tokens +share +cost-eq\n/)
+  assert.match(text, /\nExplore +claude-fixture-1 +1 +2 +1\.0K +95% +1\.4K\n/)
+  assert.match(text, /\n\(unknown\) +\(unknown\) +0 +1 +50 +4\.8% +100\n/)
+  assert.doesNotMatch(audit(['session', 'basic']).stdout, /Subagents by/)
+})
+
+test('an agent type of unknown shape, or an unreadable sidecar file, is an unknown agent', () => {
+  const t = tempConfig()
+  try {
+    const proj = path.join(t.dir, 'projects', 'p')
+    const sub = path.join(proj, 's1', 'subagents')
+    fs.mkdirSync(sub, { recursive: true })
+    const call = id => JSON.stringify({ type: 'assistant', message: { id, model: 'claude-fixture-1', usage: { output_tokens: 10 } } })
+    fs.writeFileSync(path.join(proj, 's1.jsonl'), call('m'))
+    const metas = { a: '{"agentType":"evil\\u001b[31m\\nrow"}', b: '{not json', c: '{"agentType":["x"]}', d: null, e: '{"agentType":"plugin:worker"}' }
+    for (const [name, meta] of Object.entries(metas)) {
+      fs.writeFileSync(path.join(sub, `agent-${name}.jsonl`), call(name))
+      if (meta != null) fs.writeFileSync(path.join(sub, `agent-${name}.meta.json`), meta)
+    }
+    const r = run(['session', 's1', '--project', proj, '--json'], { env: {}, cwd: t.dir })
+    assert.equal(r.code, 0, r.stderr)
+    assert.deepEqual(JSON.parse(r.stdout).subagents.byAgent.map(x => [x.agentType, x.transcripts, x.total]), [
+      [null, 4, 40],
+      ['plugin:worker', 1, 10],
+    ])
+  } finally {
+    t.done()
+  }
 })
 
 test('an ambiguous prefix is a usage error', () => {
@@ -405,6 +447,15 @@ test('default text output stays within 60 lines and 4 KB; --top raises the limit
   const t = tempConfig()
   try {
     const proj = bigProject(t.dir, { sessions: 40, calls: 120 })
+    // Eight subagent groups with names longer than their columns: five are listed, the
+    // rest summed in one line.
+    const sub = path.join(proj, `session-000-${'f'.repeat(28)}`, 'subagents')
+    fs.mkdirSync(sub, { recursive: true })
+    for (let i = 0; i < 8; i++) {
+      const call = { type: 'assistant', message: { id: `s${i}`, model: `model-${i}-${'m'.repeat(60)}`, usage: { output_tokens: 1000 * (i + 1) } } }
+      fs.writeFileSync(path.join(sub, `agent-${i}.jsonl`), JSON.stringify(call))
+      fs.writeFileSync(path.join(sub, `agent-${i}.meta.json`), JSON.stringify({ agentType: `plugin:agent-${i}-${'a'.repeat(60)}` }))
+    }
     const rank = run(['rank', '--project', proj], { env: {}, cwd: t.dir })
     assert.equal(rank.code, 0, rank.stderr)
     withinBudget(rank.stdout, 'rank')
@@ -415,6 +466,8 @@ test('default text output stays within 60 lines and 4 KB; --top raises the limit
       withinBudget(r.stdout, cmd)
     }
     const s = run(['session', id, '--project', proj], { env: {}, cwd: t.dir }).stdout
+    assert.match(s, /\nplugin:agent-7-a{22}\.\.\. +model-7-m{29}\.\.\. +1 +1 +8\.0K +22% +40\.0K\n/)
+    assert.match(s, /\nand 3 more: 6\.0K tokens\n/)
     // Every command is longer than COMMAND_WIDTH, so each is cut to exactly that width.
     const commands = s.split('\n').map(l => l.slice(l.indexOf('cd /w'))).filter(c => c.startsWith('cd /w'))
     assert.ok(commands.length > 0)

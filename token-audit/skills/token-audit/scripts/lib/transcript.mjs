@@ -21,11 +21,18 @@ const VERSION = /^\d{1,4}(\.\d{1,6}){1,3}([-+][0-9A-Za-z.-]{1,32})?$/
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$/
 const timestamp = v => (typeof v === 'string' && TIMESTAMP.test(v) ? v : null)
 
+// A model ID or an agent type, as transcripts record them (claude-opus-5-5,
+// review-kit:verifier). Anything else, such as the placeholder model of a record that
+// made no API call, is null and reported as unknown rather than printed.
+const NAME = /^[A-Za-z0-9][A-Za-z0-9 ._:@/[\]-]{0,79}$/
+export const safeName = v => (typeof v === 'string' && NAME.test(v) ? v : null)
+
 // Returns { calls, toolUses, turns, sidechain, stats }.
-// - calls: one per API response (deduped by message.id), in order of first appearance.
+// - calls: one per API response (deduped by message.id), in order of first appearance,
+//   each with the model that answered it (null when absent or of unknown shape).
 // - toolUses: Map tool_use id -> { id, name, input, callIdx, result }.
 // - turns: user prompts that started work.
-// - sidechain: usage of sidechain records found in this file (older versions wrote
+// - sidechain: { usage, model } of sidechain records found in this file (older versions wrote
 //   subagent records into the parent transcript). With { sidechain: true }, the file is a
 //   subagent transcript and its sidechain records are ordinary calls instead.
 export function parseTranscript(lines, { sidechain = false } = {}) {
@@ -97,17 +104,18 @@ export function parseTranscript(lines, { sidechain = false } = {}) {
         const usage = readUsage(msg.usage)
         if (!usage) stats.noUsage++
         if (o.isSidechain && !sidechain) {
-          if (usage) sideById.set(typeof msg.id === 'string' ? msg.id : `#${stats.lines}`, usage)
+          if (usage) sideById.set(typeof msg.id === 'string' ? msg.id : `#${stats.lines}`, { usage, model: safeName(msg.model) })
           break
         }
         const id = typeof msg.id === 'string' ? msg.id : `#${stats.lines}`
         let call = byId.get(id)
         if (!call) {
-          call = { id, idx: calls.length, segment, turn: turn ? turns.length - 1 : null, usage: null, tools: [] }
+          call = { id, idx: calls.length, segment, turn: turn ? turns.length - 1 : null, usage: null, model: null, tools: [] }
           byId.set(id, call)
           calls.push(call)
         }
         if (usage) call.usage = usage
+        if (!call.model) call.model = safeName(msg.model)
         for (const b of Array.isArray(msg.content) ? msg.content : []) {
           if (b?.type !== 'tool_use' || typeof b.id !== 'string' || toolUses.has(b.id)) continue
           const tu = { id: b.id, name: String(b.name || '?'), input: b.input && typeof b.input === 'object' ? b.input : {}, callIdx: call.idx, result: null }

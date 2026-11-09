@@ -22,6 +22,7 @@ deleted, so the ranking covers only what is still on disk.
 | cost-eq | Tokens weighted by relative price: input 1, cache write 1.25, cache read 0.1, output 5 by default (`--weights` changes them). For comparing sessions, not dollars. |
 | output share of cost-eq (main session) | Output tokens x the output weight, over the cost-eq of the main transcript, subagents left out on both sides. Follows `--weights`. |
 | sub | Share of a session's tokens spent in subagents (their transcripts plus sidechain records). |
+| subagents by agent type and model | Subagent tokens grouped by the agent type in a transcript's `agent-<id>.meta.json` and the model of each call. `transcripts` counts the subagent transcripts with a call in that group; `share` is of the session's subagent tokens. `(unknown)` is a type or model the transcript does not record, sidechain records included. The five largest groups are listed and the rest summed (`--top` lists more). |
 | round-trip tokens | An action's share of the call that issued it. A call that issued three tool uses gives each a third; a call with none is `(reply / thinking)`. |
 | ~result | Estimated size of the tool result: characters / 3.5, plus 1,600 per image. |
 | ~carry | ~result x the number of later calls in the same context segment. A compaction ends the segment. It approximates how often a result was re-read. |
