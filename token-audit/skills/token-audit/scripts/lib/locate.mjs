@@ -123,6 +123,21 @@ export function subagentFiles(projectDir, sessionId) {
   return out.sort()
 }
 
+// What a subagent transcript's sidecar file says about it: agent-<id>.meta.json next to
+// agent-<id>.jsonl. Only `agentType` is read. A missing, oversized or unparsable file is
+// an agent of unknown type, not an error.
+const META_MAX_BYTES = 64 * 1024
+export function subagentMeta(file) {
+  const meta = file.replace(/\.jsonl$/, '.meta.json')
+  try {
+    if (fs.statSync(meta).size > META_MAX_BYTES) return {}
+    const o = JSON.parse(fs.readFileSync(meta, 'utf8'))
+    return o && typeof o === 'object' ? { agentType: o.agentType } : {}
+  } catch {
+    return {}
+  }
+}
+
 // Lines of a file, read in chunks so a large transcript never becomes one string.
 export function* readLines(file) {
   const fd = fs.openSync(file, 'r')

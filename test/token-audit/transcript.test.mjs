@@ -50,10 +50,21 @@ test('slash commands count as prompts as typed; meta records do not', () => {
 test('sidechain records in a parent transcript are kept apart as subagent usage', () => {
   const p = parse('fixture-project/with-subagents.jsonl')
   assert.equal(p.calls.length, 1)
-  assert.deepEqual(p.sidechain, [{ in: 0, cw: 40, cr: 0, out: 10 }])
+  assert.deepEqual(p.sidechain, [{ usage: { in: 0, cw: 40, cr: 0, out: 10 }, model: null }])
   const sub = parse('fixture-project/with-subagents/subagents/agent-a1.jsonl', { sidechain: true })
   assert.equal(sub.calls.length, 2)
   assert.equal(sub.sidechain.length, 0)
+})
+
+test('a call carries its model; one of unknown shape is null, never printed', () => {
+  const sub = parse('fixture-project/with-subagents/subagents/agent-a1.jsonl', { sidechain: true })
+  assert.deepEqual(sub.calls.map(c => c.model), ['claude-fixture-1', 'claude-fixture-1'])
+  const rec = (id, model) => JSON.stringify({ type: 'assistant', message: { id, model, usage: { output_tokens: 1 } } })
+  const p = parseTranscript([
+    rec('a', '<synthetic>'), rec('b', 'x\u001b[31m'), rec('c', 'm'.repeat(81)), rec('d', 7), rec('e'),
+    rec('f', 'us.anthropic.claude-opus-5-5-v1:0'), rec('g', 'claude-opus-5-5[1m]'),
+  ])
+  assert.deepEqual(p.calls.map(c => c.model), [null, null, null, null, null, 'us.anthropic.claude-opus-5-5-v1:0', 'claude-opus-5-5[1m]'])
 })
 
 test('broken lines and records without usage are counted, not fatal', () => {
@@ -101,7 +112,7 @@ test('timestamps of an unknown shape are counted, not kept', () => {
 test('sidechain usage without a message id is kept, not dropped', () => {
   const side = id => JSON.stringify({ type: 'assistant', isSidechain: true, message: { ...(id ? { id } : {}), usage: { output_tokens: 7 } } })
   const p = parseTranscript([side(null), side(null), side('s1'), side('s1')])
-  assert.deepEqual(p.sidechain.map(u => u.out), [7, 7, 7])
+  assert.deepEqual(p.sidechain.map(s => s.usage.out), [7, 7, 7])
 })
 
 test('tolerates missing fields and unknown record types', () => {

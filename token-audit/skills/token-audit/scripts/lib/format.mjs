@@ -12,6 +12,7 @@ export const FORMAT = 'token-audit/1'
 export const COMMAND_WIDTH = 90
 export const PROMPT_WIDTH = 110
 const TITLE_WIDTH = 40
+const UNKNOWN = '(unknown)'
 // Text output names this many skipped sessions; --json lists them all.
 const SKIPPED_SHOWN = 5
 
@@ -150,7 +151,13 @@ export function sessionJson(d) {
       calls: t.main.calls, input: round(t.main.in), cacheWrite: round(t.main.cw), cacheRead: round(t.main.cr),
       output: round(t.main.out), total: round(t.main.total),
     },
-    subagents: { transcripts: t.subagentTranscripts, calls: t.sub.calls, total: round(t.sub.total) },
+    subagents: {
+      transcripts: t.subagentTranscripts, calls: t.sub.calls, total: round(t.sub.total),
+      byAgent: a.subagents.slice(0, d.top.subagents).map(x => ({
+        agentType: x.agentType, model: x.model, transcripts: x.transcripts, calls: x.calls,
+        total: round(x.total), output: round(x.out), costEq: round(x.costEq),
+      })),
+    },
     costEq: round(t.costEq),
     context: {
       compactions: a.context.compactions, peak: round(a.context.peak), avg: round(a.context.avg),
@@ -194,6 +201,15 @@ export function sessionText(d) {
     out.push('', 'Largest tool results by ~carry (size x later calls that re-read it)')
     out.push(...table([['action', 'l'], ['~size', 'r'], ['~carry', 'r'], ['what', 'l']],
       a.results.slice(0, d.top.results).map(x => [clip(x.key, 30), `~${tok(x.tokens)}`, `~${tok(x.carry)}`, clip(x.what, COMMAND_WIDTH)])))
+  }
+
+  if (a.subagents.length) {
+    const shown = a.subagents.slice(0, d.top.subagents)
+    const rest = a.subagents.slice(shown.length)
+    out.push('', 'Subagents by agent type and model')
+    out.push(...table([['agent type', 'l'], ['model', 'l'], ['transcripts', 'r'], ['calls', 'r'], ['tokens', 'r'], ['share', 'r'], ['cost-eq', 'r']],
+      shown.map(x => [clip(x.agentType ?? UNKNOWN, 40), clip(x.model ?? UNKNOWN, 40), x.transcripts, x.calls, tok(x.total), pct(share(x.total, t.sub.total)), tok(x.costEq)])))
+    if (rest.length) out.push(`and ${rest.length} more: ${tok(rest.reduce((s, x) => s + x.total, 0))} tokens`)
   }
 
   if (a.turns.length) {

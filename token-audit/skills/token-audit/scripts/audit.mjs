@@ -8,10 +8,10 @@
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { pathToFileURL } from 'node:url'
-import { parseTranscript, TESTED_MAX_VERSION, compareVersions } from './lib/transcript.mjs'
+import { parseTranscript, safeName, TESTED_MAX_VERSION, compareVersions } from './lib/transcript.mjs'
 import { DEFAULT_WEIGHTS, analyzeSession, sessionTotals } from './lib/attribute.mjs'
 import {
-  AuditError, configDir, findSession, listSessions, projectForCwd, readLines, sessionFromPath, subagentFiles,
+  AuditError, configDir, findSession, listSessions, projectForCwd, readLines, sessionFromPath, subagentFiles, subagentMeta,
 } from './lib/locate.mjs'
 // Paths are only joined and compared here; locate.mjs does all disk access.
 import { categoriesJson, categoriesText, rankJson, rankText, sessionJson, sessionText } from './lib/format.mjs'
@@ -29,10 +29,11 @@ Common options:
   --exit-zero                 report errors on stdout and exit 0
 Figures come from Claude Code's internal transcript format and are estimates.`
 
-const DEFAULT_TOP = { rank: 5, actions: 8, results: 5, prompts: 5 }
+const DEFAULT_TOP = { rank: 5, actions: 8, results: 5, prompts: 5, subagents: 5 }
 
-// `read` is how a transcript's lines are read; tests pass one that fails.
-export function run(argv, { env = process.env, cwd = process.cwd(), read = readLines } = {}) {
+// `read` is how a transcript's lines are read; tests pass one that fails. `meta` is how
+// a subagent transcript's sidecar file is read.
+export function run(argv, { env = process.env, cwd = process.cwd(), read = readLines, meta = subagentMeta } = {}) {
   const stdout = []
   const stderr = []
   let exitZero = argv.includes('--exit-zero')
@@ -43,7 +44,7 @@ export function run(argv, { env = process.env, cwd = process.cwd(), read = readL
       stdout.push(USAGE)
       return { code: 0, stdout: stdout.join('\n'), stderr: '' }
     }
-    const ctx = { ...opts, config: configDir(opts.configDir, env), cwd, read, warnings: [], versions: new Set(), bad: 0, badVersions: 0, badTimestamps: 0, noUsage: 0 }
+    const ctx = { ...opts, config: configDir(opts.configDir, env), cwd, read, meta, warnings: [], versions: new Set(), bad: 0, badVersions: 0, badTimestamps: 0, noUsage: 0 }
     const result = COMMANDS[opts.command](ctx)
     stdout.push(result)
     stderr.push(...finishWarnings(ctx).map(w => `token-audit: warning: ${w}`))
@@ -132,7 +133,11 @@ function unreadable(parsed) {
 
 function loadSession(ctx, s) {
   const parsed = load(ctx, s.file)
-  const subagents = ctx.includeSubagents ? subagentFiles(s.projectDir, s.id).map(f => load(ctx, f, { sidechain: true })) : []
+  // Not every .jsonl under a session is a transcript (a workflow keeps a journal there):
+  // one without assistant records is not counted as a subagent.
+  const subagents = !ctx.includeSubagents ? [] : subagentFiles(s.projectDir, s.id)
+    .map(f => ({ ...load(ctx, f, { sidechain: true }), agentType: safeName(ctx.meta(f).agentType) }))
+    .filter(p => p.stats.assistantRecords > 0)
   return { parsed, subagents }
 }
 
@@ -272,7 +277,7 @@ function sessionData(ctx) {
     id: s.id, title: parsed.stats.title, first: parsed.stats.first, last: parsed.stats.last,
     versions: parsed.stats.versions, weights: ctx.weights,
     analysis: analyzeSession(parsed, { weights: ctx.weights, subagents }),
-    top: ctx.top ? { actions: ctx.top, results: ctx.top, prompts: ctx.top } : DEFAULT_TOP,
+    top: ctx.top ? { actions: ctx.top, results: ctx.top, prompts: ctx.top, subagents: ctx.top } : DEFAULT_TOP,
   }
 }
 

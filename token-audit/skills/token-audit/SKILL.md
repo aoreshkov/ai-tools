@@ -32,7 +32,8 @@ Arguments: $ARGUMENTS
 4. Report, in this order and briefly:
    - the ranking as a table: session, date, total, cost-eq, calls, title;
    - per chosen session: its 3 costliest actions, its largest results by carry, its
-     costliest prompts, and its category split;
+     costliest prompts, its category split, and its subagents by agent type and model
+     when the output has that table;
    - 3 to 5 recommendations from the table below. Each names the number that triggered it
      (for example "cache reads are 99% and average context is 480K").
 5. End with one line: figures are estimates from Claude Code's internal transcript format,
@@ -61,5 +62,5 @@ Rules:
 | Many `Edit` or `sed -i` calls in one session | Batch related changes into fewer, larger edits; write a new file in one `Write`. |
 | `build/test/wait` is large, or `sleep`/`until`/`timeout` appear | Run builds quietly (`-q`, tail the summary) and once in the background with a notification instead of polling. |
 | Few calls issue more than one tool use (parallel count low) | Ask for independent reads, searches and checks to run in parallel. |
-| Subagent share is high | Check subagent model choice and fan-out; a smaller model often suffices for exploration. |
+| Subagent share is high | Name the agent type and model that hold most of the subagent tokens. Many transcripts of one type point at fan-out; a large model on exploration or review work points at model choice, where a smaller one often suffices. |
 | `output share of cost-eq (main session)` above ~25% | Ask for shorter replies or lower effort for routine steps. |

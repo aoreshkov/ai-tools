@@ -1,5 +1,22 @@
 # Changelog
 
+## token-audit 0.3.0
+
+- **A session's subagents are broken down by agent type and model.** `session` prints a
+  `Subagents by agent type and model` table (transcripts, calls, tokens, share of the
+  session's subagent tokens, cost-eq), and the skill reports it. One total per session
+  could not say which role of a workflow, or which model, took the tokens. The agent type
+  comes from the `agent-<id>.meta.json` file next to a subagent transcript and the model
+  from each call; either is `(unknown)` when it is missing or not a plain name. The five
+  largest groups are listed and the rest summed; `--top` lists more.
+- **`--json` shape change:** `session` gains `subagents.byAgent`, a list of
+  `{ agentType, model, transcripts, calls, total, output, costEq }` with `null` for an
+  unknown type or model. Nothing was removed or renamed.
+- **A workflow's journal is no longer counted as a subagent transcript.** Any `.jsonl`
+  under the session folder was counted, so a session that ran three workflows reported
+  three transcripts too many. A file without assistant records is now left out. Token
+  totals do not change.
+
 ## review-kit 0.5.1
 
 Fixes from a review of review-kit by review-kit.

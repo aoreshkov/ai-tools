@@ -199,7 +199,7 @@ const usable = parsed => parsed.calls.filter(c => c.usage)
 export function sessionTotals(parsed, subagents = [], weights = DEFAULT_WEIGHTS) {
   const calls = usable(parsed)
   const main = sumUsage(calls.map(c => c.usage))
-  const sub = sumUsage([...parsed.sidechain, ...subagents.flatMap(s => usable(s).map(c => c.usage))])
+  const sub = sumUsage([...parsed.sidechain, ...subagents.flatMap(usable)].map(c => c.usage))
   const all = sumUsage([])
   for (const k of ['calls', 'in', 'cw', 'cr', 'out', 'total']) all[k] = main[k] + sub[k]
   return {
@@ -209,6 +209,30 @@ export function sessionTotals(parsed, subagents = [], weights = DEFAULT_WEIGHTS)
     compactions: parsed.stats.compactions,
     subagentTranscripts: subagents.length,
   }
+}
+
+// Subagent usage by agent type and model, largest first. A subagent transcript carries
+// its `agentType` (null when unknown); sidechain records in the parent have none. A
+// transcript counts toward every group one of its calls falls in. Groups without tokens
+// (records that made no API call) are left out.
+export function subagentBreakdown(parsed, subagents = [], weights = DEFAULT_WEIGHTS) {
+  const groups = new Map()
+  const add = (agentType, c, transcript) => {
+    const key = JSON.stringify([agentType, c.model])
+    let g = groups.get(key)
+    if (!g) groups.set(key, (g = { agentType, model: c.model, usages: [], transcripts: new Set() }))
+    g.usages.push(c.usage)
+    if (transcript != null) g.transcripts.add(transcript)
+  }
+  for (const c of parsed.sidechain) add(null, c, null)
+  subagents.forEach((s, i) => { for (const c of usable(s)) add(s.agentType ?? null, c, i) })
+  return [...groups.values()]
+    .map(g => {
+      const t = sumUsage(g.usages)
+      return { agentType: g.agentType, model: g.model, transcripts: g.transcripts.size, ...t, costEq: costEq(t, weights) }
+    })
+    .filter(g => g.total > 0)
+    .sort((a, b) => b.total - a.total || String(a.agentType).localeCompare(String(b.agentType)) || String(a.model).localeCompare(String(b.model)))
 }
 
 const quantile = (values, p) => values.length ? values[Math.min(values.length - 1, Math.floor(p * (values.length - 1)))] : 0
@@ -274,6 +298,7 @@ export function analyzeSession(parsed, { weights = DEFAULT_WEIGHTS, subagents = 
     results: results.sort((a, b) => b.carry - a.carry || b.tokens - a.tokens),
     turns: turnTotals.filter(t => t.calls).sort(byTokens),
     categories: categoryBreakdown(parsed),
+    subagents: subagentBreakdown(parsed, subagents, weights),
     grand: main.total,
   }
 }
